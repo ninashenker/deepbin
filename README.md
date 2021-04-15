@@ -1,2 +1,5 @@
-# deepbin
-Improved metagenome binning and using transformers
+# deepbin: 
+Improved Metagenome Binning Using Transformers
+
+
+How to run deepbin: 
