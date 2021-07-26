@@ -277,27 +277,11 @@ class BertBin(pl.LightningModule):
         plt.savefig('epoch{nr}.png'.format(nr = self.current_epoch))
         plt.clf()
 
-       # wcss = []
-        #for i in range(1, len(genome_to_color_id)):
-         #   kmeans_pca = KMeans(n_clusters=i, init='k-means++', random_state=None)
-          #  kmeans_pca.fit(projection)
-         #   wcss.append(kmeans_pca.inertia_)
-        #plt.plot(range(1, len(genome_to_color_id)), wcss, marker = 'o', linestyle = '--')
-        #plt.savefig('kmeans.png')
-
         kmeans_pca = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit(projection)
         file_name = 'kmeans_{nr}.txt'.format(nr = self.current_epoch)
         with open(file_name, 'w') as fw:
             print(kmeans_pca.cluster_centers_, file=fw)
     
-    #def training_epoch_end(self, train_step_outputs):
-        #filter out one sample and 10 genomes
-       # samples = [x['sample_labels'] for x in train_step_outputs]
-       # for sample in samples:
-         #   if sample == '0':
-        #        print('sample', sample)
-        #return validation_epoch_end(filtered_genomes)
-
     def test_step(self, batch):
         return self.validation_step(self, batch)
 
