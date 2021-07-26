@@ -328,11 +328,11 @@ class BertBin(pl.LightningModule):
         targets = list(genome_to_color_id[x] for x in new_labels)
         plt.figure(figsize=(7, 7))
         scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-        plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
+        #plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
         plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
 
 
-        plt.savefig('complete_epoch{nr}.png'.format(nr = self.current_epoch))
+        plt.savefig('nsp_epoch{nr}.png'.format(nr = self.current_epoch))
         plt.clf()
 
         tsne = TSNE(n_components=2, perplexity=30)
@@ -343,31 +343,16 @@ class BertBin(pl.LightningModule):
         targets = list(genome_to_color_id[x] for x in new_labels)
         plt.figure(figsize=(7, 7))
         scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-        plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
+        #plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
         plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
         
         plt.savefig('tsne_epoch{nr}.png'.format(nr = self.current_epoch))
-
-       # wcss = []
-        #for i in range(1, len(genome_to_color_id)):
-         #   kmeans_pca = KMeans(n_clusters=i, init='k-means++', random_state=None)
-          #  kmeans_pca.fit(projection)
-         #   wcss.append(kmeans_pca.inertia_)
-        #plt.plot(range(1, len(genome_to_color_id)), wcss, marker = 'o', linestyle = '--')
-        #plt.savefig('kmeans.png')
 
         kmeans_pca = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit(projection)
         file_name = 'kmeans_{nr}.txt'.format(nr = self.current_epoch)
         with open(file_name, 'w') as fw:
             print(kmeans_pca.cluster_centers_, file=fw)
     
-    #def training_epoch_end(self, train_step_outputs):
-        #filter out one sample and 10 genomes
-     #   samples = [x['sample_labels'] for x in train_step_outputs]
-      #  for sample in samples:
-       #     if sample == '0':
-        #        print('sample', sample)
-        #return validation_epoch_end(filtered_genomes)
 
     def test_step(self, batch):
         return self.validation_step(self, batch)
@@ -554,6 +539,7 @@ def main():
             default=True,
             required=True
             )
+    """
     parser.add_argument(
             "-p",
             "--ckpt_path",
@@ -562,7 +548,6 @@ def main():
             default=None,
             required=False
             )
-    """
     args = parser.parse_args()
     kmers_dataset = KmerDataset(args.contigs)    
     val_dataset = GenomeKmerDataset(args.val_contigs)
@@ -575,9 +560,10 @@ def main():
             mode='min'
             )
     trainer = pl.Trainer(
-            gpus=1,
-            #accelerator='ddp',
+            gpus=4,
+            accelerator='ddp',
             callbacks=[checkpoint_callback],
+            resume_from_checkpoint = args.ckpt_path,
             num_sanity_val_steps=3,
             limit_val_batches=1600,
             )
