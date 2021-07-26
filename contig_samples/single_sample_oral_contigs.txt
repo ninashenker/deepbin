@@ -1,0 +1,1 @@
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_6/contigs/anonymous_gsa.fasta

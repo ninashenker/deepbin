@@ -1,0 +1,9 @@
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_13/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_14/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_15/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_16/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_17/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_19/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_7/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_8/contigs/anonymous_gsa.fasta
+/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_18/contigs/anonymous_gsa.fasta
