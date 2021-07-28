@@ -296,7 +296,7 @@ class BertBin(pl.LightningModule):
     
 
 class GenomeKmerDataset(torch.utils.data.Dataset):
-    def __init__(self, contigs, k=4, genomes=10, cache_name="val_tuples"):
+    def __init__(self, contigs, k=4, genomes=10, cache_name="val_tuples", tokenize=True):
         self.tokenizer = DNATokenizer.from_pretrained('dna4')
 
         #if tuples already stored, read them in - note if any of the underlying val contig samples are deleted then make sure to remove the cache or if arguments change
@@ -322,41 +322,45 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
 
         merged_df = pd.merge(contig_to_genome_df, taxonomy_df, how="left", on=["genome"])
 
-        genome_dict = dict()
         GROUP_KEY = "species"
         
         i = 0
-        genome_dict = dict()
-        groups = list(merged_df.groupby(GROUP_KEY))
-        
+        tax_dict = dict()
+        species_groups = list(merged_df.groupby(GROUP_KEY))
+         
         random.seed(42)
-        random.shuffle(groups)
-        for x_name, x in groups:
+        random.shuffle(species_groups)
+        for x_name, x in species_groups:
             if genomes is not None and i >= genomes:
                 break
 
             contigs = x['contig_name'].tolist()
-            genome_dict[x_name] = contigs
+            genome = x['genome'].tolist()
+            tax_dict[x_name] = zip(contigs, genome)
             i += 1
 
-        flatten_genome_dict =[(genome_name, contig_name) for genome_name,  contig_names in genome_dict.items() for contig_name in contig_names]
-        
+        flatten_dict =[(tax_name, contig_name, genome_id) for tax_name, contig_genome in tax_dict.items() for contig_name, genome_id in contig_genome]
+    
         #now that we have the validation contigs, we go through and find the sequence and tokenize it and then store it to disk ready to be read from get_item.
         self.tuples = []
-        for genome_name, contig_name in flatten_genome_dict:
+        for tax_name, contig_name, genome_id in flatten_dict:
             if contig_name not in sequence_by_contig_name:
                 continue
 
             sequence = sequence_by_contig_name[contig_name]
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
-            tokenized_kmers = self.tokenize_all(padded_kmers)
+            if tokenize:
+                tokenized_kmers = self.tokenize_all(padded_kmers)
+            else:
+                tokenized_kmers = padded_kmers
+
             segment = random.choice(tokenized_kmers)
             cache_file = '/mnt/data/CAMI/DNABERT/cached_contigs/val_sample_{idx}.pt'.format(idx = contig_name)
             with open(cache_file, 'w') as fp:
                 torch.save(segment, cache_file)
 
-            self.tuples.append((genome_name, contig_name, cache_file))
+            self.tuples.append((tax_name, contig_name, cache_file, genome_id))
 
         random.shuffle(self.tuples)
 
@@ -368,12 +372,13 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         species_contig_tuple = self.tuples[idx]
-        genome_id = species_contig_tuple[0]
+        taxonomy_id = species_contig_tuple[0]
         contig_file_name = species_contig_tuple[2]
         contig_name = species_contig_tuple[1]
+        genome_id = species_contig_tuple[3]
         with open(contig_file_name, 'r') as fp:
             segment = torch.load(contig_file_name)
-        return segment, genome_id, contig_name
+        return segment, taxonomy_id, contig_name, genome_id
 
     def __len__(self):
         #print("Getting length")
