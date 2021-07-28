@@ -328,18 +328,14 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
         i = 0
         genome_dict = dict()
         groups = list(merged_df.groupby(GROUP_KEY))
-
+        
         random.seed(42)
         random.shuffle(groups)
         for x_name, x in groups:
-            if i >= 10:
+            if genomes is not None and i >= genomes:
                 break
 
             contigs = x['contig_name'].tolist()
-            print(len(x['contig_name'].tolist()))
-            if len(contigs) <= 100:
-                continue
-
             genome_dict[x_name] = contigs
             i += 1
 
@@ -374,9 +370,10 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
         species_contig_tuple = self.tuples[idx]
         genome_id = species_contig_tuple[0]
         contig_file_name = species_contig_tuple[2]
+        contig_name = species_contig_tuple[1]
         with open(contig_file_name, 'r') as fp:
             segment = torch.load(contig_file_name)
-        return segment, genome_id
+        return segment, genome_id, contig_name
 
     def __len__(self):
         #print("Getting length")

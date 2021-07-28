@@ -1,5 +1,8 @@
 import pytorch_lightning as pl
-from finetune_dnabert_final import GenomeKmerDataset, BertBin
+from collections import defaultdict
+import sys
+from sklearn.cluster import KMeans
+from mlm_train import GenomeKmerDataset, BertBin
 import argparse
 import psutil
 import pathlib
@@ -10,12 +13,13 @@ from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import os
 from sklearn.manifold import TSNE
+import vamb
 
-def evaluate(model, data_loader, name, num_batches=1600, visualize=True):
+def evaluate(model, data_loader, name, num_batches=None, visualize=True):
     validation_outputs=[]
     for i, batch in enumerate(data_loader):
         print(f"{i}/{num_batches}")
-        if i >= num_batches:
+        if num_batches is not None and i >= num_batches:
             break
 
         outputs = model(batch[0]) 
@@ -25,8 +29,10 @@ def evaluate(model, data_loader, name, num_batches=1600, visualize=True):
 
         hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
         taxonomy_labels = batch[1] 
+        contig_names = batch[2]
         validation_outputs.append({ 'hidden_states': hidden_states, 
-                                    'taxonomy': taxonomy_labels })
+                                    'taxonomy': taxonomy_labels,
+                                    'contig_names': contig_names})
 
     num_hidden_states = len(hidden_states)
     for collapse_fn in ["mean_-1", "max_-1", "mean_-2", "max_-2", "pca1", "pca3", "flatten"]:
@@ -98,8 +104,44 @@ def evaluate(model, data_loader, name, num_batches=1600, visualize=True):
                 plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
                 
                 plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_tsne.png")
+
+            kmeans_clusters = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit_predict(projection)
             
-            kmeans_pca = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit_predict(projection)
+            #ATTN should have this file loaded in previously???
+            reference_path = '/mnt/data/CAMI/data/short_read_oral/reformatted_manually_combined_gsa_mapping.tsv'
+            with open(reference_path) as reference_file:
+                reference = vamb.benchmark.Reference.from_file(reference_file)
+
+            taxonomy_path = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
+            with open(taxonomy_path) as taxonomy_file:
+                    reference.load_tax_file(taxonomy_file)
+            
+            # Target format:
+            # clusters = {
+            #     "bin1": [ "contig1", "contig2"],
+            #     "bin2": [ "contig3""],
+            # }
+
+            # Current format:
+            # Index is index to contig
+            # Value is cluster name
+            # kmeans = [ 0, 0, 1 ]
+
+            #Format of contig_names
+            #list_of_tuples = [(x,y) for x in kmeans_clusters for y in contig_name]
+            #clusters = {k: [v for s, v in list_of_tuples if s == k] for k, _ in list_of_tuples}
+            #print(clusters)
+
+            clusters = defaultdict(list)
+            contig_names= [x['contig_names'] for x in validation_outputs] 
+            combined_contig_names = np.concatenate(contig_names)
+            
+            for i, x in enumerate(kmeans_clusters):
+                clusters[x].append(combined_contig_names[i])
+            
+            deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
+            for rank in deepbin_bins.summary():
+                print('\t'.join(map(str, rank)))
 
 def main():
     parser = argparse.ArgumentParser()
@@ -131,10 +173,10 @@ def main():
             )
     args = parser.parse_args()
     
-    val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val")
-    val_dataloader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=0, drop_last=False)
-    train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train")
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=False, num_workers=4, drop_last=False, prefetch_factor=1)
+    val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val", genomes=None)
+    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, drop_last=False)
+    train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train", genomes=None)
+    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=False, num_workers=4, drop_last=False)
 
     print('train length', len(train_dataloader))
     print('val length', len(val_dataloader))
@@ -142,8 +184,25 @@ def main():
     model = BertBin.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset)
     model.eval()
     
-    evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", num_batches=1000, args.visualize)
-    evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", num_batches=31, args.visualize) 
+    evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", num_batches=None, visualize = args.visualize) #1000
+    evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", num_batches=None, visualize = args.visualize) #31 
+
+
+    mincontiglength=254
+    
+    #Created in mlm train
+    contig_list = self.create_contig_file(args.train_contigs)
+
+    #TNF calculation
+   # tnfs_per_fasta = []
+   # contignames_per_fasta = []
+   # for fasta in contig_list:
+    #    with vamb.vambtools.Reader(fasta, 'rb') as tnffile:
+     #       tnfs, contignames, contiglengths = vamb.parsecontigs.read_contigs(tnffile, minlength=mincontiglength)
+      #      tnfs_per_fasta.append(tnfs)
+       #     contignames_per_fasta.extend(contignames)
+
+    #tnfs_per_fasta = np.concatenate(tnfs_per_fasta)
 
 if __name__ == "__main__":
     main()
