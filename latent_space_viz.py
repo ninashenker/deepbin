@@ -1,10 +1,13 @@
 import pytorch_lightning as pl
+import random
 from collections import defaultdict
 import vamb.vambtools as _vambtools
 import sys
 from sklearn.cluster import KMeans
+import pickle
+import csv
 from vamb._vambtools import _kmercounts
-from mlm_train import GenomeKmerDataset, BertBin
+from mlm_evaluate import GenomeKmerDataset, BertBin
 import argparse
 import psutil
 import pathlib
@@ -17,10 +20,16 @@ import os
 from sklearn.manifold import TSNE
 import vamb
 
-def evaluate(model, data_loader, name, num_batches=None, visualize=True):
+#random.seed(42)
+
+SPECIES_TO_PLOT = ['Neisseria meningitidis', 'Clostridioides difficile', 'Porphyromonas gingivalis', 'Pasteurella multocida', 'Streptococcus suis', 'Moraxella bovoculi', 'Streptococcus mutans', '[Haemophilus] ducreyi', 'Carnobacterium sp. CP1', 'Streptococcus pneumoniae']
+
+CSV_HEADER = ['name', 'species_0.3_recall', 'species_0.4_recall', 'species_0.5_recall', 'species_0.6_recall', 'species_ 0.7_recall', 'species_0.8_recall', 'species_0.9_recall', 'species_0.95_recall', 'species_0.99_recall', 'genome_0.3_recall', 'genome_0.4_recall', 'genome_0.5_recall', 'genome_0.6_recall', 'genome_0.7_recall', 'genome_0.8_recall', 'genome_0.9_recall', 'genome_0.95_recall', 'genome_0.99_recall', 'genus_0.3_recall',  'genus_0.4_recall',  'genus_0.5_recall',  'genus_0.6_recall',  'genus_0.7_recall',  'genus_0.8_recall',  'genus_0.9_recall',  'genus_0.95_recall',  'genus_0.99_recall']
+
+def evaluate(model, data_loader, name, file_name, num_batches=None, visualize=True):
     validation_outputs=[]
     for i, batch in enumerate(data_loader):
-        print(f"{i}/{num_batches}")
+        print(f"{i}/{len(data_loader)}")
         if num_batches is not None and i >= num_batches:
             break
 
@@ -28,6 +37,14 @@ def evaluate(model, data_loader, name, num_batches=None, visualize=True):
 
         print(psutil.virtual_memory().percent)
         print('---')
+        import nvidia_smi
+
+        nvidia_smi.nvmlInit()
+        handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
+        info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
+        print("Total memory:", info.total)
+        print("Free memory:", info.free)
+        print("Used memory:", info.used)
 
         hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
         taxonomy_labels = batch[1] 
@@ -38,11 +55,10 @@ def evaluate(model, data_loader, name, num_batches=None, visualize=True):
                                     'contig_names': contig_names,
                                     'genome_id': genome_id })
 
+
     num_hidden_states = len(hidden_states)
     for collapse_fn in ["mean_-1", "max_-1", "mean_-2", "max_-2", "pca1", "pca3", "flatten"]:
-        print(f"collapse_fn: {collapse_fn}")
         for hidden_state_i in range(num_hidden_states):
-            print(f"hidden_state_i: {hidden_state_i}")
 
             hidden_states= [x['hidden_states'][hidden_state_i] for x in validation_outputs] 
             combined_hidden_states = np.concatenate(hidden_states)
@@ -84,11 +100,13 @@ def evaluate(model, data_loader, name, num_batches=None, visualize=True):
             #scree plot
 
             for j in range(2, 11):
+                method_name = f"fn{collapse_fn}_layer{hidden_state_i}_pca{j}"
+                print(method_name)
+
                 pca = PCA(n_components=j)
                 pca.fit(combined_feature_space)
                 projection = pca.transform(combined_feature_space)
                 genome_to_color_id = {k: i for k, i in zip(sorted(set(new_labels)), range(10))}
-            
 
                 if visualize: 
                     genome_keys = genome_to_color_id.keys()
@@ -113,7 +131,7 @@ def evaluate(model, data_loader, name, num_batches=None, visualize=True):
                     
                     plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_tsne.png")
 
-                kmeans_clusters = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit_predict(projection)
+                kmeans_clusters = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=1).fit_predict(projection)
 
                 list_of_genome_id= [x['genome_id'] for x in validation_outputs] 
                 genome_id = [genome_id for sublist in list_of_genome_id for genome_id in sublist]
@@ -145,36 +163,160 @@ def evaluate(model, data_loader, name, num_batches=None, visualize=True):
 
                 clusters = defaultdict(list)
                 for i, x in enumerate(kmeans_clusters):
-                    clusters[x].append(contignames[i])
+                    clusters[x].append(contig_names[i])
                 
                 deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
-                i = 2
-                with open('pca{i}.txt'.format(i=i), 'w') as f:
-                    for rank in deepbin_bins.summary():
-                        print('\t'.join(map(str, rank)), file = f)
-                    i+=1
 
-_KERNEL = _vambtools.read_npz("./kernel.npz")
+                with open('results_{x}.csv'.format(x=file_name), 'a') as f:
+                    writer = csv.writer(f)
+                    flatten_bins = [str(rank) for sublist in deepbin_bins.summary() for rank in sublist]
+                    print(flatten_bins)
+                    writer.writerow([method_name] + flatten_bins)
 
-def _project(fourmers, kernel=_KERNEL):
-    "Project fourmers down in dimensionality"
-    s = fourmers.sum(axis=1).reshape(-1, 1)
-    s[s == 0] = 1.0
-    fourmers *= 1/s
-    fourmers += -(1/256)
-    return np.dot(fourmers, kernel)
+def plot(features, targets, legend_labels, name):
+    pca = PCA(n_components=2)
+    pca.fit(features)
+    projection = pca.transform(features)
 
-def _convert(raw, projected):
-    "Move data from raw PushArray to projected PushArray, converting it."
-    raw_mat = raw.take().reshape(-1, 256)
-    projected_mat = _project(raw_mat)
-    projected.extend(projected_mat.ravel())
-    raw.clear()
+    plt.figure(figsize=(7, 7))
+    scatter = plt.scatter(
+        projection[:, 0],
+        projection[:, 1],
+        alpha=0.9,
+        s=5.0,
+        c=targets,
+        cmap='tab10'
+      )
+    plt.legend(
+        loc="upper left",
+        prop={'size': 6},
+        handles=scatter.legend_elements()[0],
+        labels=legend_labels
+    )
 
-def evaluate_tnf(dataloader):
-    num_batches = len(dataloader)
-    for i, batch in enumerate(dataloader):
-        print(f"{i}/{num_batches}")
+    plt.savefig(f"{name}.png")
+    plt.clf()
+
+
+def evaluate_tnf(dataloader, contig_file, file_name):
+
+    # Retrive map from contig name to genome.
+    contig_name_to_genome = {}
+    species_to_contig_name = defaultdict(list)
+    genomes_set = set()
+    for batch in dataloader:
+        taxonomy_labels = batch[1] 
+        contig_names = batch[2]
+        genome_id = batch[3]
+
+        for name, taxonomy, genome in zip(contig_names, taxonomy_labels, genome_id):
+          contig_name_to_genome[name] = (taxonomy, genome)
+          species_to_contig_name[taxonomy].append(name)
+          genomes_set.add(genome)
+
+    print("evaluate_tnf: dataloader length", len(dataloader))
+    print("evaluate_tnf: dataset length", len(dataloader.dataset))
+
+    mincontiglength = 10
+    file_list = create_contig_file_list(contig_file)
+    assert len(file_list) == 1
+
+    # Retrive tnf frequencies for all contigs.
+    for fasta in file_list:
+        with vamb.vambtools.Reader(fasta, 'rb') as tnffile:
+            tnfs, contignames, contiglengths = vamb.parsecontigs.read_contigs(
+                tnffile,
+                minlength=mincontiglength
+            )
+
+    print("evaluate_tnf: tnfs length:", len(contignames))
+
+    # Plot 10 genomes
+    index_for_contig = {}
+    for i in range(len(contignames)):
+      index_for_contig[contignames[i]] = i
+
+    tnfs_to_plot = []
+    species_label = []
+    plot_contigs = []
+    for species in SPECIES_TO_PLOT:
+        contig_names = species_to_contig_name[species]
+        for contig_name in contig_names[:150]:
+            contig_tnfs = tnfs[index_for_contig[contig_name]]
+            tnfs_to_plot.append(contig_tnfs)
+            species_label.append(species)
+            plot_contigs.append(contig_name)
+
+    tnfs_to_plot = np.stack(tnfs_to_plot)
+    print(tnfs_to_plot.shape)
+
+    genome_to_color_id = {k: i for k, i in zip(sorted(set(species_label)), range(10))}
+    genome_keys = genome_to_color_id.keys()
+    targets = list(genome_to_color_id[x] for x in species_label)
+    plot(tnfs_to_plot, targets, genome_keys, name="tnf_gt_{dataset}".format(dataset=file_name))
+
+    cache_file = "tnf_clusters_{dataset}.pkl".format(dataset=file_name)
+    if os.path.exists(cache_file):
+        with open(cache_file, 'rb') as fp:
+            kmeans_clusters = pickle.load(fp)
+
+    else:
+
+        # Cluster tnfs.
+        kmeans = KMeans(n_clusters = len(genomes_set), init = 'k-means++', random_state=1)
+        kmeans_clusters = kmeans.fit_predict(tnfs)
+
+        with open(cache_file, 'wb') as fp:
+            pickle.dump(kmeans_clusters, fp, protocol=4)
+
+    print("Finished clustering")
+
+    bin_labels = [str(i) for i in range(len(SPECIES_TO_PLOT))]
+    targets = []
+    for contig in plot_contigs:
+        target = kmeans_clusters[index_for_contig[contig]]
+        targets.append(target)
+
+    plot(tnfs_to_plot, targets, bin_labels, name="tnf_clusters_{dataset}".format(dataset=file_name))
+
+    # Create reference file.
+    genome_id = [contig_name_to_genome[x][1] for x in contignames]
+    contigs_for_genome = defaultdict(list)
+    for contig_name, genome, contiglength in zip(contignames, genome_id, contiglengths):
+        contig = vamb.benchmark.Contig.subjectless(contig_name, contiglength)
+        contigs_for_genome[genome].append(contig)
+
+    genomes = [] 
+    for genome_instance in set(genome_id):
+        genome = vamb.benchmark.Genome(genome_instance)
+        for contig_name in contigs_for_genome[genome_instance]:
+            genome.add(contig_name)
+
+        genomes.append(genome)
+
+    for genome in genomes:
+        genome.update_breadth()
+                    
+    reference = vamb.benchmark.Reference(genomes)
+
+    taxonomy_path = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
+    with open(taxonomy_path) as taxonomy_file:
+          reference.load_tax_file(taxonomy_file)
+
+    clusters = defaultdict(list)
+    for i, x in enumerate(kmeans_clusters):
+        clusters[x].append(contignames[i])
+
+    deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
+
+    # Save results.
+    with open('results_{x}.csv'.format(x=file_name), 'w') as f:
+        writer = csv.writer(f)
+        writer.writerow(CSV_HEADER)
+        flatten_bins = [str(rank) for sublist in deepbin_bins.summary() for rank in sublist]
+        print(flatten_bins)
+        writer.writerow(["tnf"] + flatten_bins)
+
 
 def create_contig_file_list(path_to_contig_file):
     contig_list = []
@@ -213,79 +355,23 @@ def main():
     args = parser.parse_args()
     
     val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val", genomes=None)
-    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4, drop_last=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=1, drop_last=False)
     train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train", genomes=None)
-    train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=False, num_workers=4, drop_last=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=False, num_workers=1, drop_last=False)
 
-    contig_name_to_genome = {}
-
-    genomes = set()
-    for batch in train_dataloader:
-        taxonomy_labels = batch[1] 
-        contig_names = batch[2]
-        genome_id = batch[3]
-
-        for name, taxonomy, genome in zip(contig_names, taxonomy_labels, genome_id):
-          contig_name_to_genome[name] = (taxonomy, genome)
-          genomes.add(genome)
-
-    mincontiglength = 10
-    file_list = create_contig_file_list(args.train_contigs)
-
-    assert len(file_list) == 1
-    for fasta in file_list:
-        with vamb.vambtools.Reader(fasta, 'rb') as tnffile:
-            tnfs, contignames, contiglengths = vamb.parsecontigs.read_contigs(tnffile, minlength=mincontiglength)
-
-    kmeans_clusters = KMeans(n_clusters = len(genomes), init = 'k-means++', random_state=None).fit_predict(tnfs)
-
-    genome_id = [contig_name_to_genome[x][1] for x in contignames]
-
-    contigs_for_genome = defaultdict(list)
-    for contig_name, genome, contiglength in zip(contignames, genome_id, contiglengths):
-        contig = vamb.benchmark.Contig.subjectless(contig_name, contiglength)
-        contigs_for_genome[genome].append(contig)
-
-    genomes = [] 
-    for genome_instance in set(genome_id):
-        genome = vamb.benchmark.Genome(genome_instance)
-        for contig_name in contigs_for_genome[genome_instance]:
-            genome.add(contig_name)
-
-        genomes.append(genome)
-
-    for genome in genomes:
-        genome.update_breadth()
-                    
-    reference = vamb.benchmark.Reference(genomes)
-    taxonomy_path = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
-    with open(taxonomy_path) as taxonomy_file:
-            reference.load_tax_file(taxonomy_file)
-
-    clusters = defaultdict(list)
-    for i, x in enumerate(kmeans_clusters):
-        clusters[x].append(contig_names[i])
-    
-    deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
-    i = 2
-    with open('pca{i}.txt'.format(i=i), 'w') as f:
-        for rank in deepbin_bins.summary():
-            print('\t'.join(map(str, rank)), file = f)
-        i+=1
-
-    # detokenized_val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val_no_token", genomes=None, tokenize=False)
-    # detokenized_val_dataloader = DataLoader(detokenized_val_dataset, batch_size=32, shuffle=False, num_workers=4, drop_last=False)
-    # evaluate_tnf(detokenized_val_dataloader)
+    train_file_name = "train"
+    val_file_name = "val"
+    evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name)
+    evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name)
 
     print('train length', len(train_dataloader))
     print('val length', len(val_dataloader))
 
     model = BertBin.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset)
     model.eval()
-
     
-    # evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", num_batches=2, visualize = args.visualize) #1000
-    # evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", num_batches=2, visualize = args.visualize) #31 
+    evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, num_batches=900, visualize = args.visualize)
+    evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, num_batches=900, visualize = args.visualize)
 
 
 if __name__ == "__main__":

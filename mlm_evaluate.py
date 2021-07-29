@@ -22,7 +22,6 @@ from copy import deepcopy
 import glob
 import pandas as pd
 import numpy as np
-from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
@@ -42,12 +41,12 @@ else:
     device = torch.device("cpu")
 
 class KmerDataset(torch.utils.data.Dataset):
-    def __init__(self, contigs, k=4, genomes=10):
+    def __init__(self, contigs, k=4):
         self.tokenizer = DNATokenizer.from_pretrained('dna4')
-        self.vocab = '/mnt/data/CAMI/DNABERT/pretrained_models/4-new-12w-0/vocab.txt'
-
+        self.train_tuples = []
         #if tuples already stored, read them in - note if any of the underlying val contig samples are deleted then make sure to remove the cache or if arguments change
-        tuple_cache_file = '/mnt/data/CAMI/DNABERT/nsp_train_tuples.pickle'
+        # CHANGE THE CACHE
+        tuple_cache_file = '/mnt/data/CAMI/DNABERT/train_tuples.pickle'
         if os.path.exists(tuple_cache_file):
             with open(tuple_cache_file, 'rb') as fp:
                 self.train_tuples = pickle.load(fp)
@@ -55,91 +54,33 @@ class KmerDataset(torch.utils.data.Dataset):
 
         #contigs are coming in as a list of paths to the samples. we need to open all of the samples and retrieve the sequences by their contig_name
         contig_list = self.create_contig_file_list(contigs)
-        for x in range(len(contig_list)):
-            sample_id = x
         sequence_by_contig_name = self.file2seq(contig_list)
-
-        #genome information is stored in the taxonomy and gsa mapping files. We need to join these together and then sample 10 genomes and store their respective contigs.
-        taxonomy = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
-        contig_to_genome = '/mnt/data/CAMI/data/short_read_oral/reformatted_manually_combined_gsa_mapping.tsv'
-
-        contig_to_genome_df = pd.read_csv(contig_to_genome, sep='\t', header=None)
-        contig_to_genome_df = contig_to_genome_df.rename(columns={0: 'contig_name', 1: 'genome'})
         
-        taxonomy_df = pd.read_csv(taxonomy, sep='\t', header = None)
-        taxonomy_df = taxonomy_df.rename(columns={0: 'genome', 1: 'species', 2: 'genus'})
-
-        merged_df = pd.merge(contig_to_genome_df, taxonomy_df, how="left", on=["genome"])
-    
-        genome_dict = dict()
-        GROUP_KEY = "species"
-        
-        genome_dict = dict()
-        groups = list(merged_df.groupby(GROUP_KEY))
-        random.shuffle(groups)
-        for x_name, x in groups:
-            genome_dict[x_name] = x['contig_name'].tolist()
-
-        flatten_genome_dict =[(genome_name, contig_name) for genome_name,  contig_names in genome_dict.items() for contig_name in contig_names]
-
-        #now that we have the validation contigs, we go through and find the sequence and tokenize it and then store it to disk ready to be read from get_item.
-        self.train_tuples = []
-        for genome_name, contig_name in flatten_genome_dict:
-            if contig_name not in sequence_by_contig_name:
-                continue
-
-            sequence = sequence_by_contig_name[contig_name]
+        for key, value in sequence_by_contig_name.items():
+            sequence = sequence_by_contig_name[key]
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
             tokenized_kmers = self.tokenize_all(padded_kmers)
-            cache_file = '/mnt/data/CAMI/DNABERT/nsp_contigs/contig_{idx}.pt'.format(idx = contig_name)
+            cache_file = '/mnt/data/CAMI/DNABERT/cached_contigs/contig_{idx}.pickle'.format(idx=key)
+
             with open(cache_file, 'w') as fp:
                 torch.save(tokenized_kmers, cache_file)
 
-            self.train_tuples.append((genome_name, contig_name, cache_file, sample_id))
-
-        random.shuffle(self.train_tuples)
+            self.train_tuples.append((key, cache_file))
 
         with open(tuple_cache_file, 'wb') as fp:
             pickle.dump(self.train_tuples, fp, protocol=4)
-
+            
         print('Length of train tuples', len(self.train_tuples))
 
     def __getitem__(self, idx):
         #print("Getting item index", idx)
         contig_cache_tuple = self.train_tuples[idx]
-        #genome_id = contig_cache_tuple[0]
-        #ATTN CHANGE BACK TO 2 WHEN YOU RECACHE
-        contig_file_name = contig_cache_tuple[2]
+        contig_file_name = contig_cache_tuple[1]
         with open(contig_file_name, 'r') as fp:
             segments = torch.load(contig_file_name)
-            if len(segments) >= 2:
-                segment_idx = random.randint(0, len(segments) - 2)
-            else:
-                segment_idx = 0
-            segment = segments[segment_idx]
-
-        if random.random() > 0.5 and len(segments) > 1:
-            next_segment_idx = segment_idx + 1
-            next_segment = segments[next_segment_idx]
-            nsp_label = 1
-        else:
-            next_sentence_tuple = random.choice(self.train_tuples) # Make sure this isn't the same as contig_cach_tuple above
-            contig_file_name = next_sentence_tuple[2] 
-            with open(contig_file_name, 'r') as fp:
-                segments = torch.load(contig_file_name)
-                next_segment = random.choice(segments)
-                nsp_label = 0
-        
-        sep_token = torch.tensor([self.tokenizer.vocab['[SEP]']])
-        cls_token = torch.tensor([self.tokenizer.vocab['[CLS]']])
-        #combine cls + segment + sep + segment + sep
-        combined_segment = torch.cat((cls_token, segment, sep_token, next_segment, sep_token))
-        #print('combined_segment', combined_segment)
-        token_type_ids = torch.tensor((2 + len(segment)) * [0] + (1 + len(next_segment)) * [1])
-        return combined_segment, nsp_label, token_type_ids
-        #return genome_id
-
+            segment = random.choice(segments)
+        return segment
 
     def __len__(self):
         #print("Getting length")
@@ -178,22 +119,23 @@ class KmerDataset(torch.utils.data.Dataset):
     def create_padding(self, kmers):
         print('Padding the sequences')
         kmers_split = kmers.split() 
-        token_inputs = [kmers_split[i:i+254] for i in range(0, len(kmers_split), 254)]
-        num_to_pad = 254 - len(token_inputs[-1])
+        token_inputs = [kmers_split[i:i+512] for i in range(0, len(kmers_split), 512)]
+        num_to_pad = 512 - len(token_inputs[-1])
         token_inputs[-1].extend(['[PAD]'] * num_to_pad)
         return token_inputs
     
-    def tokenize_all(self, kmers_254_segments):
+    def tokenize_all(self, kmers_512_segments):
         print('Tokenizing')
-        tokenized_254_segments = []
-        for idx, segment in enumerate(kmers_254_segments):
-            tokenized_sequence = self.tokenizer.encode(segment, add_special_tokens=False, max_length=254)
+        tokenized_512_segments = []
+        for idx, segment in enumerate(kmers_512_segments):
+            tokenized_sequence = self.tokenizer.encode_plus(segment, add_special_tokens=True, max_length=512)["input_ids"]
             tokenized_sequence = torch.tensor(tokenized_sequence, dtype=torch.long)
-            tokenized_254_segments.append(tokenized_sequence)
-        return tokenized_254_segments
+            tokenized_512_segments.append(tokenized_sequence)
+        return tokenized_512_segments
     
+ 
 NUM_LABELS = 1
-MAX_LENGTH = 254
+MAX_LENGTH = 512
 
 MASK_LIST = {
             "3": [-1, 1],
@@ -208,16 +150,18 @@ class BertBin(pl.LightningModule):
         print("Activating BERTBIN BBY")
         dir_to_pretrained_model = '/mnt/data/CAMI/DNABERT/pretrained_models/4-new-12w-0'
 
-        config = BertConfig.from_pretrained('/mnt/data/CAMI/DNABERT/pretrained_models/4-new-12w-0/config.json', output_hidden_states=True)
-        self.model = BertForPreTraining.from_pretrained(dir_to_pretrained_model, config=config) 
+        config = BertConfig.from_pretrained('/mnt/data/CAMI/DNABERT/pretrained_models/4-new-12w-0/config.json', output_hidden_states=True, return_dict=True)
+        self.model = BertForMaskedLM.from_pretrained(dir_to_pretrained_model, config=config)
+        #self.model = BertForPreTraining.from_pretrained(dir_to_pretrained_model, config=config) 
 
-        self._train_dataloader = DataLoader(kmer_dataset, batch_size=16, shuffle=True, num_workers=7, drop_last=True)
-        self._val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=7, drop_last=False)
-        print('train length', len(self._train_dataloader))
-        print('val length', len(self._val_dataloader))
+        self._train_dataloader = DataLoader(kmer_dataset, batch_size=16, shuffle=True, num_workers=8, drop_last=True)
+        self._val_dataloader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=8, drop_last=False)
         
         self.train_tokenizer = kmer_dataset.tokenizer
         self.val_tokenizer = val_dataset.tokenizer
+    
+    def forward(self, x):
+        return self.model(x)
 
     def configure_optimizers(self):
         no_decay = ["bias", "LayerNorm.weight"]
@@ -247,7 +191,6 @@ class BertBin(pl.LightningModule):
 
         labels = inputs.clone().cuda()
             # We sample a few tokens in each sequence for masked-LM training (with probability args.mlm_probability defaults to 0.15 in Bert)
-
         probability_matrix = torch.full(labels.shape, mlm_probability).cuda()
         special_tokens_mask = [
                 tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
@@ -255,7 +198,7 @@ class BertBin(pl.LightningModule):
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool, device = probability_matrix.device), value=0.0)
         if tokenizer._pad_token is not None:
             padding_mask = labels.eq(tokenizer.pad_token_id)
-            probability_matrix.masked_fill_(padding_mask.cuda(), value=0.0)
+            probability_matrix.masked_fill_(padding_mask.cuda(), value=0.0)  
 
         masked_indices = torch.bernoulli(probability_matrix).bool()
 
@@ -279,43 +222,41 @@ class BertBin(pl.LightningModule):
         inputs[indices_replaced] = tokenizer.convert_tokens_to_ids(tokenizer.mask_token)
 
         # 10% of the time, we replace masked input tokens with random word
-        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool().cuda() & masked_indices & ~indices_replaced
+        indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool().cuda() & masked_indices & ~indices_replaced 
         random_words = torch.randint(len(tokenizer), labels.shape, dtype=torch.long)
         inputs[indices_random] = random_words[indices_random].cuda()
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
         return inputs, labels
 
- 
     def training_step(self, batch, batch_idx):
         #print("Start training")
-        inputs, labels = self.mask_tokens(batch[0], self.train_tokenizer) 
-        outputs = self.model(inputs, masked_lm_labels=labels, next_sentence_label=batch[1], token_type_ids=batch[2]) 
+        inputs, labels = self.mask_tokens(batch, self.train_tokenizer) 
+        outputs = self.model(inputs, masked_lm_labels=labels) 
         train_loss = outputs[0]  # model outputs are always tuple in transformers
-        #taxonomy_labels = batch[1]
-        #sample_labels = batch[2]
-        self.log('train_loss', train_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
 
-        return train_loss
-    
+        self.log('train_loss', train_loss, on_step=True, on_epoch=True, prog_bar=True, logger=True)
+        return train_loss 
         
     def validation_step(self, batch, batch_idx):
         #print("Start validation")
         inputs, labels = self.mask_tokens(batch[0], self.val_tokenizer) 
-        outputs = self.model(inputs, masked_lm_labels=labels, next_sentence_label=batch[1], token_type_ids=batch[2])
+        outputs = self.model(inputs, masked_lm_labels=labels) 
         val_loss = outputs[0]
-        hidden_states = outputs[3]
-        # embedding_output = hidden_states[0]
+        hidden_states = outputs[2]
+        embedding_output = hidden_states[0]
+        #attention_hidden_states = hidden_states[1:]
         last_hidden_state = hidden_states[1]
-        cls = last_hidden_state[:, 0]
-        self.log('val_loss', val_loss, on_epoch=True, prog_bar=True, on_step=True)
-        taxonomy_labels = batch[3] 
+        cls = torch.mean(last_hidden_state, 1)
+        self.log('val_loss', val_loss)
+        taxonomy_labels = batch[1] 
         
         return {'loss': val_loss.cpu(), 'prediction': cls.cpu(), 'taxonomy': taxonomy_labels}
     
     def validation_epoch_end(self, validation_step_outputs):
         pred = [x['prediction'] for x in validation_step_outputs] 
         combined_feature_space = torch.cat(pred)
+        print('feature shape', combined_feature_space.shape)
         labels = [x['taxonomy'] for x in validation_step_outputs]
         new_labels= [item for t in labels for item in t]
 
@@ -324,36 +265,23 @@ class BertBin(pl.LightningModule):
         projection = pca.transform(combined_feature_space)
 
         genome_to_color_id = {k: i for k, i in zip(sorted(set(new_labels)), range(10))}
+        print(genome_to_color_id)
         genome_keys = genome_to_color_id.keys()
         targets = list(genome_to_color_id[x] for x in new_labels)
         plt.figure(figsize=(7, 7))
         scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-        #plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
+        plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
         plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
 
 
-        plt.savefig('nsp_epoch{nr}.png'.format(nr = self.current_epoch))
+        plt.savefig('epoch{nr}.png'.format(nr = self.current_epoch))
         plt.clf()
-
-        tsne = TSNE(n_components=2, perplexity=30)
-        projection = tsne.fit_transform(combined_feature_space)
-
-        genome_to_color_id = {k: i for k, i in zip(sorted(set(new_labels)), range(10))}
-        genome_keys = genome_to_color_id.keys()
-        targets = list(genome_to_color_id[x] for x in new_labels)
-        plt.figure(figsize=(7, 7))
-        scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-        #plt.text(3, 2.25, 'epoch:{nr}'.format(nr = self.current_epoch), color='black', fontsize=12)
-        plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
-        
-        plt.savefig('tsne_epoch{nr}.png'.format(nr = self.current_epoch))
 
         kmeans_pca = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit(projection)
         file_name = 'kmeans_{nr}.txt'.format(nr = self.current_epoch)
         with open(file_name, 'w') as fw:
             print(kmeans_pca.cluster_centers_, file=fw)
     
-
     def test_step(self, batch):
         return self.validation_step(self, batch)
 
@@ -368,7 +296,7 @@ class BertBin(pl.LightningModule):
     
 
 class GenomeKmerDataset(torch.utils.data.Dataset):
-    def __init__(self, contigs, k=4, cache_name="nsp_val_tuples"):
+    def __init__(self, contigs, k=4, genomes=10, cache_name="val_tuples"):
         self.tokenizer = DNATokenizer.from_pretrained('dna4')
 
         #if tuples already stored, read them in - note if any of the underlying val contig samples are deleted then make sure to remove the cache or if arguments change
@@ -394,74 +322,59 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
 
         merged_df = pd.merge(contig_to_genome_df, taxonomy_df, how="left", on=["genome"])
 
-    
-        genome_dict = dict()
         GROUP_KEY = "species"
         
         i = 0
-        groups = list(merged_df.groupby(GROUP_KEY))
-        species_to_plot = ['Neisseria meningitidis', 'Clostridioides difficile', 'Porphyromonas gingivalis', 'Pasteurella multocida', 'Streptococcus suis', 'Moraxella bovoculi', 'Streptococcus mutans', '[Haemophilus] ducreyi', 'Carnobacterium sp. CP1', 'Streptococcus pneumoniae']
-        for x_name, x in groups:
-            if x_name not in species_to_plot:
-                continue
-            genome_dict[x_name] = x['contig_name'].tolist()
+        tax_dict = dict()
+        species_groups = list(merged_df.groupby(GROUP_KEY))
+         
+        random.seed(42)
+        random.shuffle(species_groups)
+        for x_name, x in species_groups:
+            if genomes is not None and i >= genomes:
+                break
 
-        flatten_genome_dict =[(genome_name, contig_name) for genome_name,  contig_names in genome_dict.items() for contig_name in contig_names]
-        
+            contigs = x['contig_name'].tolist()
+            genome = x['genome'].tolist()
+            tax_dict[x_name] = zip(contigs, genome)
+            i += 1
+
+        flatten_dict =[(tax_name, contig_name, genome_id) for tax_name, contig_genome in tax_dict.items() for contig_name, genome_id in contig_genome]
+    
         #now that we have the validation contigs, we go through and find the sequence and tokenize it and then store it to disk ready to be read from get_item.
         self.tuples = []
-        for genome_name, contig_name in flatten_genome_dict:
+        for tax_name, contig_name, genome_id in flatten_dict:
             if contig_name not in sequence_by_contig_name:
                 continue
+
             sequence = sequence_by_contig_name[contig_name]
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
             tokenized_kmers = self.tokenize_all(padded_kmers)
-            if len(tokenized_kmers) <= 1:
-                continue
-
-            segment_idx = random.randint(0, len(tokenized_kmers) - 2)
-            cache_file = '/mnt/data/CAMI/DNABERT/nsp_contigs/val_sample_{idx}.pt'.format(idx = contig_name)
+            segment = random.choice(tokenized_kmers)
+            cache_file = '/mnt/data/CAMI/DNABERT/cached_contigs/val_sample_{idx}.pt'.format(idx = contig_name)
             with open(cache_file, 'w') as fp:
-                segment = tokenized_kmers[segment_idx]
-                next_segment = tokenized_kmers[segment_idx + 1]
-                torch.save([segment, next_segment], cache_file)
+                torch.save(segment, cache_file)
 
-            self.tuples.append((genome_name, contig_name, cache_file))
+            self.tuples.append((tax_name, contig_name, cache_file, genome_id))
 
         random.shuffle(self.tuples)
 
         with open(tuple_cache_file, 'wb') as fp:
             pickle.dump(self.tuples, fp, protocol=4)
-        
+
         print('Length of tuples', len(self.tuples))
         
 
     def __getitem__(self, idx):
-        #print("Getting item index", idx)
-        contig_cache_tuple = self.tuples[idx]
-        genome_id = contig_cache_tuple[0]
-        #ATTN CHANGE BACK TO 2 WHEN YOU RECACHE
-        contig_file_name = contig_cache_tuple[2]
+        species_contig_tuple = self.tuples[idx]
+        taxonomy_id = species_contig_tuple[0]
+        contig_file_name = species_contig_tuple[2]
+        contig_name = species_contig_tuple[1]
+        genome_id = species_contig_tuple[3]
         with open(contig_file_name, 'r') as fp:
-            segment, next_segment = torch.load(contig_file_name)
-            nsp_label = 1
-
-        if random.random() > 0.5:
-            next_sentence_tuple = random.choice(self.tuples)
-            contig_file_name = next_sentence_tuple[2]
-            with open(contig_file_name, 'r') as fp:
-                 _, next_segment = torch.load(contig_file_name)
-                 nsp_label = 0
-        
-        sep_token = torch.tensor([self.tokenizer.vocab['[SEP]']])
-        cls_token = torch.tensor([self.tokenizer.vocab['[CLS]']])
-        #combine cls + segment + sep + segment + sep
-        combined_segment = torch.cat((cls_token, segment, sep_token, next_segment, sep_token))
-        token_type_ids = torch.tensor((2 + len(segment)) * [0] + (1 + len(next_segment)) * [1])
-        
-        
-        return combined_segment, nsp_label, token_type_ids, genome_id
+            segment = torch.load(contig_file_name)
+        return segment, taxonomy_id, contig_name, genome_id
 
     def __len__(self):
         #print("Getting length")
@@ -499,19 +412,19 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
     def create_padding(self, kmers):
         print('Padding the sequences')
         kmers_split = kmers.split() 
-        token_inputs = [kmers_split[i:i+254] for i in range(0, len(kmers_split), 254)]
-        num_to_pad = 254 - len(token_inputs[-1])
+        token_inputs = [kmers_split[i:i+512] for i in range(0, len(kmers_split), 512)]
+        num_to_pad = 512 - len(token_inputs[-1])
         token_inputs[-1].extend(['[PAD]'] * num_to_pad)
         return token_inputs
     
-    def tokenize_all(self, kmers_254_segments):
+    def tokenize_all(self, kmers_512_segments):
         print('Tokenizing')
-        tokenized_254_segments=[]
-        for idx, segment in enumerate(kmers_254_segments):
-            tokenized_sequence = self.tokenizer.encode(segment, add_special_tokens=False, max_length=254)
+        tokenized_512_segments=[]
+        for idx, segment in enumerate(kmers_512_segments):
+            tokenized_sequence = self.tokenizer.encode_plus(segment, add_special_tokens=True, max_length=512)["input_ids"]
             tokenized_sequence = torch.tensor(tokenized_sequence, dtype=torch.long)
-            tokenized_254_segments.append(tokenized_sequence)
-        return tokenized_254_segments        
+            tokenized_512_segments.append(tokenized_sequence)
+        return tokenized_512_segments        
 
 
 def main():
@@ -537,7 +450,6 @@ def main():
             default=True,
             required=True
             )
-    """
     parser.add_argument(
             "-p",
             "--ckpt_path",
@@ -546,13 +458,14 @@ def main():
             default=None,
             required=False
             )
+    """
     args = parser.parse_args()
     kmers_dataset = KmerDataset(args.contigs)    
     val_dataset = GenomeKmerDataset(args.val_contigs)
     checkpoint_callback = ModelCheckpoint(
             save_weights_only=False,
-            verbose=True,
-            monitor='val_loss_epoch',
+            verbose=False,
+            monitor='val_loss',
             save_top_k=2,
             save_last=True,
             mode='min'
@@ -561,13 +474,11 @@ def main():
             gpus=4,
             accelerator='ddp',
             callbacks=[checkpoint_callback],
-            #resume_from_checkpoint = args.ckpt_path,
             num_sanity_val_steps=3,
             limit_val_batches=1600,
+            max_epochs = 20
             )
-    model = BertBin.load_from_checkpoint(args.ckpt_path, strict=False, kmer_dataset=kmers_dataset, val_dataset=val_dataset)
-    #model = BertBin(kmers_dataset, val_dataset)
-
+    model = BertBin(kmers_dataset, val_dataset)
     trainer.fit(model)
 #    if args.training == True:
  #       trainer.fit(model)
