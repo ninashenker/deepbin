@@ -26,7 +26,7 @@ SPECIES_TO_PLOT = ['Neisseria meningitidis', 'Clostridioides difficile', 'Porphy
 
 CSV_HEADER = ['name', 'species_0.3_recall', 'species_0.4_recall', 'species_0.5_recall', 'species_0.6_recall', 'species_ 0.7_recall', 'species_0.8_recall', 'species_0.9_recall', 'species_0.95_recall', 'species_0.99_recall', 'genome_0.3_recall', 'genome_0.4_recall', 'genome_0.5_recall', 'genome_0.6_recall', 'genome_0.7_recall', 'genome_0.8_recall', 'genome_0.9_recall', 'genome_0.95_recall', 'genome_0.99_recall', 'genus_0.3_recall',  'genus_0.4_recall',  'genus_0.5_recall',  'genus_0.6_recall',  'genus_0.7_recall',  'genus_0.8_recall',  'genus_0.9_recall',  'genus_0.95_recall',  'genus_0.99_recall']
 
-def evaluate(model, data_loader, name, file_name, num_batches=None, visualize=True):
+def evaluate(model, data_loader, name, file_name, layer, collapse_fn, num_batches=None, visualize=True):
     validation_outputs=[]
     for i, batch in enumerate(data_loader):
         print(f"{i}/{len(data_loader)}")
@@ -36,142 +36,136 @@ def evaluate(model, data_loader, name, file_name, num_batches=None, visualize=Tr
         outputs = model(batch[0]) 
 
         print(psutil.virtual_memory().percent)
-        print('---')
-        import nvidia_smi
 
-        nvidia_smi.nvmlInit()
-        handle = nvidia_smi.nvmlDeviceGetHandleByIndex(0)
-        info = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
-        print("Total memory:", info.total)
-        print("Free memory:", info.free)
-        print("Used memory:", info.used)
+        # hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
+        selected_hidden_state = outputs[1][layer].detach().cpu().numpy()
+        if collapse_fn == "mean_-1":
+            combined_feature_space = np.mean(selected_hidden_state, axis=-1)
+        elif collapse_fn == "max_-1":
+            combined_feature_space = np.max(selected_hidden_state, axis=-1)
+        elif collapse_fn == "mean_-2":
+            combined_feature_space = np.mean(selected_hidden_state, axis=-2)
+        elif collapse_fn == "max_-2":
+            combined_feature_space = np.max(selected_hidden_state, axis=-2)
+        elif collapse_fn == "flatten":
+            b, s, f = selected_hidden_state.shape
+            combined_feature_space = selected_hidden_state.reshape(b, s * f)
+        elif collapse_fn == "pca3":
+            b, s, f = selected_hidden_state.shape
+            components = 3
+            combined_feature_space = np.zeros((b, s * components))
+            pca = PCA(n_components=components)
+            for b_i in range(b):
+                pca.fit(selected_hidden_state[b_i])
+                projection = pca.transform(selected_hidden_state[b_i])
+                combined_feature_space[b_i] = projection.reshape(s * components)
+        elif collapse_fn == "pca1":
+            b, s, f = selected_hidden_state.shape
+            components = 1
+            combined_feature_space = np.zeros((b, s * components))
+            pca = PCA(n_components=components)
+            for b_i in range(b):
+                pca.fit(selected_hidden_state[b_i])
+                projection = pca.transform(selected_hidden_state[b_i])
+                combined_feature_space[b_i] = projection.reshape(s * components)
+        else:
+            raise ValueError(f"{collapse_fn} not supported")
 
-        hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
         taxonomy_labels = batch[1] 
         contig_names = batch[2]
         genome_id = batch[3]
-        validation_outputs.append({ 'hidden_states': hidden_states, 
+        print('shape', combined_feature_space.shape)
+        validation_outputs.append({ 'collapsed_hidden_state': combined_feature_space, 
                                     'taxonomy': taxonomy_labels,
                                     'contig_names': contig_names,
                                     'genome_id': genome_id })
 
 
-    num_hidden_states = len(hidden_states)
-    for collapse_fn in ["mean_-1", "max_-1", "mean_-2", "max_-2", "pca1", "pca3", "flatten"]:
-        for hidden_state_i in range(num_hidden_states):
+    labels = [x['taxonomy'] for x in validation_outputs]
+    new_labels= [item for t in labels for item in t]
 
-            hidden_states= [x['hidden_states'][hidden_state_i] for x in validation_outputs] 
-            combined_hidden_states = np.concatenate(hidden_states)
-            if collapse_fn == "mean_-1":
-                combined_feature_space = np.mean(combined_hidden_states, axis=-1)
-            elif collapse_fn == "max_-1":
-                combined_feature_space = np.max(combined_hidden_states, axis=-1)
-            elif collapse_fn == "mean_-2":
-                combined_feature_space = np.mean(combined_hidden_states, axis=-2)
-            elif collapse_fn == "max_-2":
-                combined_feature_space = np.max(combined_hidden_states, axis=-2)
-            elif collapse_fn == "flatten":
-                b, s, f = combined_hidden_states.shape
-                combined_feature_space = combined_hidden_states.reshape(b, s * f)
-            elif collapse_fn == "pca3":
-                b, s, f = combined_hidden_states.shape
-                components = 3
-                combined_feature_space = np.zeros((b, s * components))
-                pca = PCA(n_components=components)
-                for b_i in range(b):
-                    pca.fit(combined_hidden_states[b_i])
-                    projection = pca.transform(combined_hidden_states[b_i])
-                    combined_feature_space[b_i] = projection.reshape(s * components)
-            elif collapse_fn == "pca1":
-                b, s, f = combined_hidden_states.shape
-                components = 1
-                combined_feature_space = np.zeros((b, s * components))
-                pca = PCA(n_components=components)
-                for b_i in range(b):
-                    pca.fit(combined_hidden_states[b_i])
-                    projection = pca.transform(combined_hidden_states[b_i])
-                    combined_feature_space[b_i] = projection.reshape(s * components)
-            else:
-                raise ValueError(f"{collapse_fn} not supported")
+    combined_feature_space = [x['collapsed_hidden_state'] for x in validation_outputs]
+    print('length', len(combined_feature_space))
+    combined_feature_space = np.concatenate(combined_feature_space)
 
-            labels = [x['taxonomy'] for x in validation_outputs]
-            new_labels= [item for t in labels for item in t]
+    #scree plot
+    hidden_state_i = layer
+    for j in [5, 10, 15, 20, 50, 75, 103, 200, 500]:
+        method_name = f"fn{collapse_fn}_layer{hidden_state_i}_pca{j}"
+        print(method_name)
 
-            #scree plot
+        pca = PCA(n_components=j)
+        print(combined_feature_space.shape)
+        print('------------------------------------------')
+        print(j)
+        pca.fit(combined_feature_space)
+        projection = pca.transform(combined_feature_space)
+        genome_to_color_id = {k: i for k, i in zip(sorted(set(new_labels)), range(10))}
 
-            for j in range(2, 11):
-                method_name = f"fn{collapse_fn}_layer{hidden_state_i}_pca{j}"
-                print(method_name)
+        if visualize: 
+            genome_keys = genome_to_color_id.keys()
+            targets = list(genome_to_color_id[x] for x in new_labels)
+            plt.figure(figsize=(7, 7))
+            scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
+            plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
 
-                pca = PCA(n_components=j)
-                pca.fit(combined_feature_space)
-                projection = pca.transform(combined_feature_space)
-                genome_to_color_id = {k: i for k, i in zip(sorted(set(new_labels)), range(10))}
+            os.makedirs(name, exist_ok=True)
+            plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_pca.png")
+            plt.clf()
 
-                if visualize: 
-                    genome_keys = genome_to_color_id.keys()
-                    targets = list(genome_to_color_id[x] for x in new_labels)
-                    plt.figure(figsize=(7, 7))
-                    scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-                    plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
+            tsne = TSNE(n_components=2, perplexity=30)
+            projection = tsne.fit_transform(combined_feature_space)
 
-                    os.makedirs(name, exist_ok=True)
-                    plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_pca.png")
-                    plt.clf()
+            genome_to_color_id = {k: i for k, i in zip((set(new_labels)), range(10))}
+            genome_keys = genome_to_color_id.keys()
+            targets = list(genome_to_color_id[x] for x in new_labels)
+            plt.figure(figsize=(7, 7))
+            scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
+            plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
+            
+            plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_tsne.png")
 
-                    tsne = TSNE(n_components=2, perplexity=30)
-                    projection = tsne.fit_transform(combined_feature_space)
+        kmeans_clusters = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=1).fit_predict(projection)
 
-                    genome_to_color_id = {k: i for k, i in zip((set(new_labels)), range(10))}
-                    genome_keys = genome_to_color_id.keys()
-                    targets = list(genome_to_color_id[x] for x in new_labels)
-                    plt.figure(figsize=(7, 7))
-                    scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-                    plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
-                    
-                    plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_tsne.png")
+        list_of_genome_id= [x['genome_id'] for x in validation_outputs] 
+        genome_id = [genome_id for sublist in list_of_genome_id for genome_id in sublist]
 
-                kmeans_clusters = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=1).fit_predict(projection)
+        list_of_contig_names= [x['contig_names'] for x in validation_outputs] 
+        contig_names = [contig_name for sublist in list_of_contig_names for contig_name in sublist]
 
-                list_of_genome_id= [x['genome_id'] for x in validation_outputs] 
-                genome_id = [genome_id for sublist in list_of_genome_id for genome_id in sublist]
+        contigs_for_genome = defaultdict(list)
+        for contig_name, genome in zip(contig_names, genome_id):
+            contig = vamb.benchmark.Contig.subjectless(contig_name, 512)
+            contigs_for_genome[genome].append(contig)
 
-                list_of_contig_names= [x['contig_names'] for x in validation_outputs] 
-                contig_names = [contig_name for sublist in list_of_contig_names for contig_name in sublist]
+        genomes = [] 
+        for genome_instance in set(genome_id):
+        # Example of creating 1 genome:
+            genome = vamb.benchmark.Genome(genome_instance)
+            for contig_name in contigs_for_genome[genome_instance]:
+                genome.add(contig_name)
 
-                contigs_for_genome = defaultdict(list)
-                for contig_name, genome in zip(contig_names, genome_id):
-                    contig = vamb.benchmark.Contig.subjectless(contig_name, 512)
-                    contigs_for_genome[genome].append(contig)
+            genomes.append(genome)
 
-                genomes = [] 
-                for genome_instance in set(genome_id):
-                # Example of creating 1 genome:
-                    genome = vamb.benchmark.Genome(genome_instance)
-                    for contig_name in contigs_for_genome[genome_instance]:
-                        genome.add(contig_name)
+        for genome in genomes:
+            genome.update_breadth()
+                        
+        reference = vamb.benchmark.Reference(genomes)
+        taxonomy_path = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
+        with open(taxonomy_path) as taxonomy_file:
+                reference.load_tax_file(taxonomy_file)
 
-                    genomes.append(genome)
+        clusters = defaultdict(list)
+        for i, x in enumerate(kmeans_clusters):
+            clusters[x].append(contig_names[i])
+        
+        deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
 
-                for genome in genomes:
-                    genome.update_breadth()
-                                
-                reference = vamb.benchmark.Reference(genomes)
-                taxonomy_path = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
-                with open(taxonomy_path) as taxonomy_file:
-                        reference.load_tax_file(taxonomy_file)
-
-                clusters = defaultdict(list)
-                for i, x in enumerate(kmeans_clusters):
-                    clusters[x].append(contig_names[i])
-                
-                deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
-
-                with open('results_{x}.csv'.format(x=file_name), 'a') as f:
-                    writer = csv.writer(f)
-                    flatten_bins = [str(rank) for sublist in deepbin_bins.summary() for rank in sublist]
-                    print(flatten_bins)
-                    writer.writerow([method_name] + flatten_bins)
+        with open('results_{x}.csv'.format(x=file_name), 'a') as f:
+            writer = csv.writer(f)
+            flatten_bins = [str(rank) for sublist in deepbin_bins.summary() for rank in sublist]
+            print(flatten_bins)
+            writer.writerow([method_name] + flatten_bins)
 
 def plot(features, targets, legend_labels, name):
     pca = PCA(n_components=2)
@@ -355,9 +349,9 @@ def main():
     args = parser.parse_args()
     
     val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val", genomes=None)
-    val_dataloader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=1, drop_last=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=7, drop_last=False)
     train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train", genomes=None)
-    train_dataloader = DataLoader(train_dataset, batch_size=2, shuffle=False, num_workers=1, drop_last=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=False, num_workers=7, drop_last=False)
 
     train_file_name = "train"
     val_file_name = "val"
@@ -370,8 +364,11 @@ def main():
     model = BertBin.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset)
     model.eval()
     
-    evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, num_batches=900, visualize = args.visualize)
-    evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, num_batches=900, visualize = args.visualize)
+    collapse_options = ["max_-1", "mean_-1", "mean_-2", "max_-2", "pca1", "pca3", "flatten"] 
+    for x in collapse_options:
+        for i in [12, 11, 10, 4, 0]:
+            evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=i, collapse_fn=x, num_batches=None, visualize = args.visualize)
+            evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=i , collapse_fn=x, num_batches=None, visualize = args.visualize)
 
 
 if __name__ == "__main__":
