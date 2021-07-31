@@ -296,7 +296,7 @@ class BertBin(pl.LightningModule):
     
 
 class GenomeKmerDataset(torch.utils.data.Dataset):
-    def __init__(self, contigs, k=4, genomes=10, cache_name="val_tuples"):
+    def __init__(self, contigs, random_segment = True, k=4, genomes=10, cache_name="val_tuples"):
         self.tokenizer = DNATokenizer.from_pretrained('dna4')
 
         #if tuples already stored, read them in - note if any of the underlying val contig samples are deleted then make sure to remove the cache or if arguments change
@@ -331,7 +331,15 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
         random.seed(42)
         random.shuffle(species_groups)
         for x_name, x in species_groups:
-            if genomes is not None and i >= genomes:
+
+            # Skip genome if it isn't in the list of given genomes.
+            if genomes is not None and isinstance(genomes, list):
+                if x_name not in genomes: 
+                    continue
+                else:
+                    print(x_name)
+
+            elif genomes is not None and i >= genomes:
                 break
 
             contigs = x['contig_name'].tolist()
@@ -348,10 +356,15 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
                 continue
 
             sequence = sequence_by_contig_name[contig_name]
+            if len(sequence) < 512 or len(sequence) > 600:
+                continue
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
             tokenized_kmers = self.tokenize_all(padded_kmers)
-            segment = random.choice(tokenized_kmers)
+            if random_segment:
+                segment = random.choice(tokenized_kmers)
+            else:
+                segment = tokenized_kmers[0]
             cache_file = '/mnt/data/CAMI/DNABERT/cached_contigs/val_sample_{idx}.pt'.format(idx = contig_name)
             with open(cache_file, 'w') as fp:
                 torch.save(segment, cache_file)
