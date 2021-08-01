@@ -167,19 +167,19 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                 with open(taxonomy_path) as taxonomy_file:
                         reference.load_tax_file(taxonomy_file)
 
-                print("Reference:")
-                print(reference.ngenomes)
-                print(reference.ncontigs)
+                #print("Reference:")
+                #print(reference.ngenomes)
+                #print(reference.ncontigs)
 
                 k_centers = [int(len(genomes) * 0.2), int(len(genomes) * 0.5), len(genomes)]
                 k_methods = ["kmeans", "kmedoids"]
                 k_combos = itertools.product(k_methods, k_centers)
 
                 cluster_sizes = [5, 10, 15, 20]
-                methods = ["hdbscan"]
+                methods = ["hdbscan", "vamb_clustering"]
                 cluster_combos = itertools.product(methods, cluster_sizes)
 
-                methods = list(k_combos) + list(cluster_combos)
+                methods = list(k_combos) + list(cluster_combos) 
                 for cluster_method, k in methods:
                         method_name = f"{cluster_method}_{k}_fn{collapse_fn}_layer{hidden_state_i}_{projection_method}{j}"
                         print(method_name)
@@ -189,21 +189,25 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                             cluster_results = KMedoids(n_clusters = k, random_state=1).fit_predict(projection)
                         elif cluster_method == "hdbscan":
                             cluster_results = hdbscan.HDBSCAN(min_cluster_size=k).fit_predict(projection)
+                            #print('hdbscan', cluster_results)
+                        elif cluster_method == "vamb_clustering":
+                            cluster_results = dict(vamb.cluster.cluster(projection))
+
 
                         clusters = defaultdict(list)
                         for i, x in enumerate(cluster_results):
                             clusters[x].append(contig_names[i])
-
+                    
                         if -1 in clusters:
                             del clusters[-1]  # Remove "no bin" from dbscan
-
+                        
                         deepbin_bins = vamb.benchmark.Binning(clusters, reference, minsize=1)
 
-                        print("Binning:")
-                        print(deepbin_bins.nbins)
-                        print(deepbin_bins.ncontigs)
+                        #print("Binning:")
+                        #print(deepbin_bins.nbins)
+                        #print(deepbin_bins.ncontigs)
 
-                        results_name = "Neisseria meningitidis"
+                        #results_name = "Neisseria meningitidis"
                         # print(results_name)
                         # print(deepbin_bins.print_matrix(rank=0))
                         # for i, x in enumerate(clusters.keys()):
@@ -218,13 +222,13 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                         with open('results_{x}.csv'.format(x=file_name), 'a') as f:
                             writer = csv.writer(f)
                             flatten_bins = [str(rank) for sublist in deepbin_bins.summary() for rank in sublist]
-                            print(flatten_bins)
+                            #print(flatten_bins)
                             writer.writerow([method_name] + flatten_bins)
 
                         if visualize: 
                             plt.figure(figsize=(7, 7))
+                            #print(cluster_results)
                             scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=cluster_results, cmap='tab10')
-
                             os.makedirs(name, exist_ok=True)
                             plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}_{cluster_method}_{k}_cluster.png")
                             plt.clf()
@@ -443,7 +447,7 @@ def main():
     model = BertBin.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset).cuda()
     model.eval()
     
-    for i in [12, 11, 10, 4, 0]:
+    for i in reversed(range(13)):
 #        evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=i, collapse_fn=x, num_batches=None, visualize = args.visualize)
         evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=i, num_batches=None, visualize = args.visualize)
 
