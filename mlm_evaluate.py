@@ -356,7 +356,8 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
                 continue
 
             sequence = sequence_by_contig_name[contig_name]
-            if len(sequence) < 512 or len(sequence) > 600:
+            contig_length = len(sequence)
+            if len(sequence) < 512:
                 continue
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
@@ -369,7 +370,7 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
             with open(cache_file, 'w') as fp:
                 torch.save(segment, cache_file)
 
-            self.tuples.append((tax_name, contig_name, cache_file, genome_id))
+            self.tuples.append((tax_name, contig_name, cache_file, genome_id, contig_length))
 
         random.shuffle(self.tuples)
 
@@ -385,9 +386,10 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
         contig_file_name = species_contig_tuple[2]
         contig_name = species_contig_tuple[1]
         genome_id = species_contig_tuple[3]
+        contig_length = species_contig_tuple[4]
         with open(contig_file_name, 'r') as fp:
             segment = torch.load(contig_file_name)
-        return segment, taxonomy_id, contig_name, genome_id
+        return segment, taxonomy_id, contig_name, genome_id, contig_length
 
     def __len__(self):
         #print("Getting length")
