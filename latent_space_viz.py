@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import os
 from sklearn.manifold import TSNE
 import vamb
+import pandas as pd
 
 #random.seed(42)
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -155,12 +156,12 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                 df = df.rename(columns={0: 'contig_name', 1: 'genome', 2: 'subject', 3: 'start', 4: 'end'})
 
                 contigs_for_genome = defaultdict(list)
-                for contig_name, genome, length in zip(contig_names, genome_id, lengths):
-                    df.loc[df['contig_name'] == contig_name, ['start', 'end']]
-                    df
-                    contig = vamb.benchmark.Contig(contig_name, genome, length)
+                for contig_name, genome in zip(contig_names, genome_id):
+                    length_positions = df.loc[df['contig_name'] == contig_name, ['start', 'end']]
+                    start = length_positions['start'].item()
+                    end = length_positions['end'].item()
+                    contig = vamb.benchmark.Contig(contig_name, genome, start, end)
                     contigs_for_genome[genome].append(contig)
-                print(contigs_for_genome)
 
                 genomes = [] 
                 for genome_instance in set(genome_id):
@@ -189,19 +190,24 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                 k_combos = itertools.product(k_methods, k_centers)
 
                 cluster_sizes = [5, 10, 15, 20]
-                #methods = ["hdbscan", "vamb_clustering"]
-                methods = ["vamb_clustering"]
+                methods = ["hdbscan", "vamb_clustering"]
                 cluster_combos = itertools.product(methods, cluster_sizes)
 
-                #methods = list(k_combos) + list(cluster_combos) 
-                methods = list(cluster_combos)
+                methods = list(k_combos) + list(cluster_combos) 
+                #methods = list(cluster_combos)
                 for cluster_method, k in methods:
                         method_name = f"{cluster_method}_{k}_fn{collapse_fn}_layer{hidden_state_i}_{projection_method}{j}"
                         print(method_name)
                         if cluster_method == "kmeans":
                             cluster_results = KMeans(n_clusters = k, init = 'k-means++', random_state=1).fit_predict(projection)
+                            clusters = defaultdict(list)
+                            for i, x in enumerate(cluster_results):
+                                clusters[x].append(contig_names[i])
                         elif cluster_method == "kmedoids":
                             cluster_results = KMedoids(n_clusters = k, random_state=1).fit_predict(projection)
+                            clusters = defaultdict(list)
+                            for i, x in enumerate(cluster_results):
+                                clusters[x].append(contig_names[i])
                         elif cluster_method == "hdbscan":
                             cluster_results = hdbscan.HDBSCAN(min_cluster_size=k).fit_predict(projection)
                             clusters = defaultdict(list)
@@ -210,15 +216,18 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                             if -1 in clusters:
                                 del clusters[-1]  # Remove "no bin" from dbscan
                         elif cluster_method == "vamb_clustering":
-                            with open('/mnt/data/CAMI/data/short_read_oral/2017.12.04_18.45.54_sample_13/contigs/anonymous_gsa.fasta', 'rb') as contigfile:
-                                    tnfs, contignames, contiglengths = vamb.parsecontigs.read_contigs(contigfile)
-                            filtered_labels = [n for n in contignames if n in contig_names]
-                            cluster_results = vamb.cluster.cluster(projection, labels=filtered_labels)
+                            filtered_labels = [n for n in contig_names]
+                            vamb_clusters = vamb.cluster.cluster(projection, labels=filtered_labels)
+                            cluster_results = list(vamb_clusters)
+                            sorted_labels = sorted(set(filtered_labels))
+                            genome_to_color_id = {k: i for i, k in enumerate(sorted_labels)}
+                            genome_keys = genome_to_color_id.keys()
+                            cluster_results = list(genome_to_color_id[x] for x in filtered_labels)
+
                             with open('bins.tsv', 'w') as binfile:
-                                    vamb.vambtools.write_clusters(binfile, cluster_results)
+                                    vamb.vambtools.write_clusters(binfile, vamb_clusters)
                             with open('bins.tsv') as clusters_file:
                                     clusters = vamb.vambtools.read_clusters(clusters_file)
-                            #print(clusters)
                             #clusters = defaultdict(list)
                             #for key, value in cluster_results.items():
                              #   clusters[key].append(contig_names)
@@ -233,7 +242,7 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                         #print(deepbin_bins.nbins)
                         #print(deepbin_bins.ncontigs)
 
-                        print(deepbin_bins.print_matrix(rank=0))
+                        #print(deepbin_bins.print_matrix(rank=0))
                         #for i, x in enumerate(clusters.keys()):
                             #print(i)
                             #print(deepbin_bins.confusion_matrix(genome, x))
@@ -251,8 +260,6 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
 
                         if visualize: 
                             plt.figure(figsize=(7, 7))
-                            np.set_printoptions(threshold=sys.maxsize)
-                            #print(cluster_results)
                             scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=cluster_results, cmap='tab10')
                             os.makedirs(name, exist_ok=True)
                             plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}_{cluster_method}_{k}_cluster.png")
@@ -474,7 +481,7 @@ def main():
     
     #for i in reversed(range(13)):
 #        evaluate(model, val_dataloader, name=f"viz_out/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=i, collapse_fn=x, num_batches=None, visualize = args.visualize)
-    evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=100, visualize = args.visualize)
+    evaluate(model, train_dataloader, name=f"viz_out/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=1000, visualize = args.visualize)
 
 
 if __name__ == "__main__":
