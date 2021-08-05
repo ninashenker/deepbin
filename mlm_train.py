@@ -156,12 +156,11 @@ class BertBin(pl.LightningModule):
 
         self._train_dataloader = DataLoader(kmer_dataset, batch_size=16, shuffle=True, num_workers=8, drop_last=True)
         self._val_dataloader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=8, drop_last=False)
+        print('train length', len(self._train_dataloader))
+        print('val length', len(self._val_dataloader))
         
         self.train_tokenizer = kmer_dataset.tokenizer
         self.val_tokenizer = val_dataset.tokenizer
-    
-    def forward(self, x):
-        return self.model(x)
 
     def configure_optimizers(self):
         no_decay = ["bias", "LayerNorm.weight"]
@@ -277,11 +276,27 @@ class BertBin(pl.LightningModule):
         plt.savefig('epoch{nr}.png'.format(nr = self.current_epoch))
         plt.clf()
 
+       # wcss = []
+        #for i in range(1, len(genome_to_color_id)):
+         #   kmeans_pca = KMeans(n_clusters=i, init='k-means++', random_state=None)
+          #  kmeans_pca.fit(projection)
+         #   wcss.append(kmeans_pca.inertia_)
+        #plt.plot(range(1, len(genome_to_color_id)), wcss, marker = 'o', linestyle = '--')
+        #plt.savefig('kmeans.png')
+
         kmeans_pca = KMeans(n_clusters = len(genome_to_color_id), init = 'k-means++', random_state=None).fit(projection)
         file_name = 'kmeans_{nr}.txt'.format(nr = self.current_epoch)
         with open(file_name, 'w') as fw:
             print(kmeans_pca.cluster_centers_, file=fw)
     
+    #def training_epoch_end(self, train_step_outputs):
+        #filter out one sample and 10 genomes
+       # samples = [x['sample_labels'] for x in train_step_outputs]
+       # for sample in samples:
+         #   if sample == '0':
+        #        print('sample', sample)
+        #return validation_epoch_end(filtered_genomes)
+
     def test_step(self, batch):
         return self.validation_step(self, batch)
 
@@ -296,11 +311,11 @@ class BertBin(pl.LightningModule):
     
 
 class GenomeKmerDataset(torch.utils.data.Dataset):
-    def __init__(self, contigs, k=4, genomes=10, cache_name="val_tuples", tokenize=True):
+    def __init__(self, contigs, k=4, genomes=10):
         self.tokenizer = DNATokenizer.from_pretrained('dna4')
 
         #if tuples already stored, read them in - note if any of the underlying val contig samples are deleted then make sure to remove the cache or if arguments change
-        tuple_cache_file = f"/mnt/data/CAMI/DNABERT/{cache_name}.pickle"
+        tuple_cache_file = '/mnt/data/CAMI/DNABERT/val_tuples.pickle'
         if os.path.exists(tuple_cache_file):
             with open(tuple_cache_file, 'rb') as fp:
                 self.tuples = pickle.load(fp)
@@ -321,46 +336,37 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
         taxonomy_df = taxonomy_df.rename(columns={0: 'genome', 1: 'species', 2: 'genus'})
 
         merged_df = pd.merge(contig_to_genome_df, taxonomy_df, how="left", on=["genome"])
-
+        #ATTN: will not work if you change the sample
+        merged_df_sample_6 = merged_df[merged_df['contig_name'].str.startswith('S6C')]
+    
+        genome_dict = dict()
         GROUP_KEY = "species"
         
         i = 0
-        tax_dict = dict()
-        species_groups = list(merged_df.groupby(GROUP_KEY))
-         
-        random.seed(42)
-        random.shuffle(species_groups)
-        for x_name, x in species_groups:
-            if genomes is not None and i >= genomes:
+        genome_dict = dict()
+        groups = list(merged_df_sample_6.groupby(GROUP_KEY))
+        random.shuffle(groups)
+        for x_name, x in groups:
+            if i >= 10:
                 break
-
-            contigs = x['contig_name'].tolist()
-            genome = x['genome'].tolist()
-            tax_dict[x_name] = zip(contigs, genome)
+            genome_dict[x_name] = x['contig_name'].tolist()
             i += 1
 
-        flatten_dict =[(tax_name, contig_name, genome_id) for tax_name, contig_genome in tax_dict.items() for contig_name, genome_id in contig_genome]
-    
+        flatten_genome_dict =[(genome_name, contig_name) for genome_name,  contig_names in genome_dict.items() for contig_name in contig_names]
+        
         #now that we have the validation contigs, we go through and find the sequence and tokenize it and then store it to disk ready to be read from get_item.
         self.tuples = []
-        for tax_name, contig_name, genome_id in flatten_dict:
-            if contig_name not in sequence_by_contig_name:
-                continue
-
+        for genome_name, contig_name in flatten_genome_dict:
             sequence = sequence_by_contig_name[contig_name]
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
-            if tokenize:
-                tokenized_kmers = self.tokenize_all(padded_kmers)
-            else:
-                tokenized_kmers = padded_kmers
-
+            tokenized_kmers = self.tokenize_all(padded_kmers)
             segment = random.choice(tokenized_kmers)
             cache_file = '/mnt/data/CAMI/DNABERT/cached_contigs/val_sample_{idx}.pt'.format(idx = contig_name)
             with open(cache_file, 'w') as fp:
                 torch.save(segment, cache_file)
 
-            self.tuples.append((tax_name, contig_name, cache_file, genome_id))
+            self.tuples.append((genome_name, contig_name, cache_file))
 
         random.shuffle(self.tuples)
 
@@ -372,13 +378,11 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         species_contig_tuple = self.tuples[idx]
-        taxonomy_id = species_contig_tuple[0]
+        genome_id = species_contig_tuple[0]
         contig_file_name = species_contig_tuple[2]
-        contig_name = species_contig_tuple[1]
-        genome_id = species_contig_tuple[3]
         with open(contig_file_name, 'r') as fp:
             segment = torch.load(contig_file_name)
-        return segment, taxonomy_id, contig_name, genome_id
+        return segment, genome_id
 
     def __len__(self):
         #print("Getting length")
