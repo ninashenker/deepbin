@@ -1,4 +1,7 @@
+import math
 import random
+from sklearn.metrics.cluster import pair_confusion_matrix
+from sklearn import metrics
 import pytorch_lightning as pl
 from collections import defaultdict
 import vamb.vambtools as _vambtools
@@ -32,9 +35,9 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 
 SPECIES_TO_PLOT = ['Neisseria meningitidis', 'Clostridioides difficile', 'Porphyromonas gingivalis', 'Pasteurella multocida', 'Streptococcus suis', 'Moraxella bovoculi', 'Streptococcus mutans', '[Haemophilus] ducreyi', 'Carnobacterium sp. CP1', 'Streptococcus pneumoniae']
 
-#CSV_HEADER = ['name', 'species_0.3_recall', 'species_0.4_recall', 'species_0.5_recall', 'species_0.6_recall', 'species_ 0.7_recall', 'species_0.8_recall', 'species_0.9_recall', 'species_0.95_recall', 'species_0.99_recall', 'genome_0.3_recall', 'genome_0.4_recall', 'genome_0.5_recall', 'genome_0.6_recall', 'genome_0.7_recall', 'genome_0.8_recall', 'genome_0.9_recall', 'genome_0.95_recall', 'genome_0.99_recall', 'genus_0.3_recall',  'genus_0.4_recall',  'genus_0.5_recall',  'genus_0.6_recall',  'genus_0.7_recall',  'genus_0.8_recall',  'genus_0.9_recall',  'genus_0.95_recall',  'genus_0.99_recall']
+CSV_HEADER = ['name', 'species_0.3_recall', 'species_0.4_recall', 'species_0.5_recall', 'species_0.6_recall', 'species_ 0.7_recall', 'species_0.8_recall', 'species_0.9_recall', 'species_0.95_recall', 'species_0.99_recall', 'genome_0.3_recall', 'genome_0.4_recall', 'genome_0.5_recall', 'genome_0.6_recall', 'genome_0.7_recall', 'genome_0.8_recall', 'genome_0.9_recall', 'genome_0.95_recall', 'genome_0.99_recall', 'genus_0.3_recall',  'genus_0.4_recall',  'genus_0.5_recall',  'genus_0.6_recall',  'genus_0.7_recall',  'genus_0.8_recall',  'genus_0.9_recall',  'genus_0.95_recall',  'genus_0.99_recall']
 
-def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visualize=True, mlm_only=True):
+def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visualize=True, mlm_only=True, contig_range=None):
     if os.path.exists("batches.pickle"):
         os.remove("batches.pickle")
 
@@ -43,6 +46,7 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
     for i, batch in t:
         # print(f"{i}/{len(data_loader)}")
         num_results = num_batches if num_batches is not None and i >= num_batches else len(data_loader)
+
         if num_batches is not None and i >= num_batches:
             break   
 
@@ -54,13 +58,13 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
         # hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
         if mlm_only:
             selected_hidden_state = outputs[1][layer].detach().cpu().numpy()
-            #collapsed_hidden_state = np.mean(selected_hidden_state, axis=-2)#.astype(np.float32)
+            collapsed_hidden_state = np.mean(selected_hidden_state, axis=-2)#.astype(np.float32)
             taxonomy_labels = batch[1] 
             contig_names = batch[2]
             genome_id = batch[3]
             contig_length = batch[4]
             with open('batches.pickle', 'ab') as fp:
-                pickle.dump({ 'selected_hidden_state': selected_hidden_state,
+                pickle.dump({ 'collapsed_hidden_state': collapsed_hidden_state,
                               'taxonomy': taxonomy_labels,
                               'contig_names': contig_names,
                               'genome_id': genome_id,
@@ -90,15 +94,15 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
     cls = []
     
     if mlm_only:
-        selected_hidden_state = np.empty((len(data_loader.dataset), 512, 768), dtype='float32')
-        #selected_hidden_state = np.empty((num_results * data_loader.batch_size, 512, 768), dtype='float32')
+        #collapsed_hidden_state = np.empty((len(data_loader.dataset), 768), dtype='float32')
+        collapsed_hidden_state = np.empty((num_results * data_loader.batch_size, 768), dtype='float32')
         with open('batches.pickle', 'rb') as fr:
             try:
                 i = 0
                 while True:
                     step_result = pickle.load(fr)
                     new_labels.extend(step_result["taxonomy"])
-                    selected_hidden_state[i:i+data_loader.batch_size] = step_result["selected_hidden_state"]
+                    collapsed_hidden_state[i:i+data_loader.batch_size] = step_result["collapsed_hidden_state"]
                     genome_id.extend(step_result["genome_id"])
                     contig_names.extend(step_result["contig_names"])
                     i += data_loader.batch_size
@@ -121,11 +125,12 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                 pass
 
         combined_feature_space = cls
-    print('len of selected_hidden_state', len(selected_hidden_state))
+    print('len of collapsed_hidden_state', len(collapsed_hidden_state))
     print('len of cls', len(cls))
     print('len of genome ids', len(genome_id))
     print('len of labels', len(new_labels))
     print('len of contig names', len(contig_names))
+    """
     if mlm_only: 
         collapse_options = ["mean_-2"] #, "max_-1", "mean_-1", "max_-2", "flatten"] #mean-2
         for collapse_fn in collapse_options:
@@ -160,39 +165,41 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                     combined_feature_space[b_i] = projection.reshape(s * components)
             else:
                 raise ValueError(f"{collapse_fn} not supported")
+"""
+    hidden_state_i = layer
+    projection_dims = [2] if visualize else [500] #[5, 15, 50, 75, 103, 200, 500] 
+    for j in projection_dims:
+        for projection_method in ["pca"]: # ["umap"]:
+            if projection_method == "pca":
+                pca = PCA(n_components=j, random_state=1)
+                pca.fit(collapsed_hidden_state)
+                projection = pca.transform(collapsed_hidden_state)
+            elif projection_method == "umap":
+                umap = UMAP(
+                    n_neighbors=40,
+                    min_dist=0.0,
+                    n_components=j,
+                    random_state=42,
+                )
+                projection = umap.fit_transform(collapsed_hidden_state)
 
-            hidden_state_i = layer
-            projection_dims = [2] if visualize else [500] #[5, 15, 50, 75, 103, 200, 500] 
-            for j in projection_dims:
-                for projection_method in ["pca"]: # ["umap"]:
-                    if projection_method == "pca":
-                        pca = PCA(n_components=j, random_state=1)
-                        pca.fit(combined_feature_space)
-                        projection = pca.transform(combined_feature_space)
-                    elif projection_method == "umap":
-                        umap = UMAP(
-                            n_neighbors=40,
-                            min_dist=0.0,
-                            n_components=j,
-                            random_state=42,
-                        )
-                        projection = umap.fit_transform(combined_feature_space)
+            sorted_labels = sorted(set(new_labels))
+            genome_to_color_id = {k: i for i, k in enumerate(sorted_labels)}
+            genome_keys = genome_to_color_id.keys()
+            targets = list(genome_to_color_id[x] for x in new_labels)
 
-                    if visualize: 
-                        sorted_labels = sorted(set(new_labels))
-                        genome_to_color_id = {k: i for i, k in enumerate(sorted_labels)}
-                        genome_keys = genome_to_color_id.keys()
-                        targets = list(genome_to_color_id[x] for x in new_labels)
-                        plt.figure(figsize=(7, 7))
-                        scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
-                        plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
+            if visualize: 
+                plt.figure(figsize=(7, 7))
+                scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=targets, cmap='tab10')
+                plt.legend(loc="upper left", prop={'size': 6}, handles=scatter.legend_elements()[0], labels=genome_keys)
+                plt.axis('off')
 
-                        os.makedirs(name, exist_ok=True)
-                        if mlm_only:
-                            plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}.png")
-                        else:
-                            plt.savefig(f"{name}/viz_{hidden_state_i}_{projection_method}_nsp.png")
-                        plt.clf()
+                os.makedirs(name, exist_ok=True)
+                if mlm_only:
+                    plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}.png")
+                else:
+                    plt.savefig(f"{name}/viz_{hidden_state_i}_{projection_method}_nsp.png")
+                plt.clf()
 
         # tsne = TSNE(n_components=2, perplexity=30)
         # projection = tsne.fit_transform(combined_feature_space)
@@ -253,8 +260,6 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
     #print(len(genomes))
     #print(genomes)
     reference = vamb.benchmark.Reference(genomes)
-    #print('reference')
-    #print(reference)
     taxonomy_path = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
     with open(taxonomy_path) as taxonomy_file:
         reference.load_tax_file(taxonomy_file)
@@ -263,11 +268,12 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
     #print('ref ngenomes', reference.ngenomes)
     #print('ref ncontigs', reference.ncontigs)
 
+
     k_centers = [int(len(genomes) * 0.2), int(len(genomes) * 0.5), len(genomes)]
     k_methods = ["kmeans", "kmedoids"]
     k_combos = itertools.product(k_methods, k_centers)
 
-    cluster_sizes = [20, 100] #[5, 10, 15, 20]
+    cluster_sizes = [20] #[5, 10, 15, 20]
     methods = ["hdbscan"] #, "vamb_clustering"]
     cluster_combos = itertools.product(methods, cluster_sizes)
 
@@ -275,7 +281,7 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
     methods = list(cluster_combos)
     for cluster_method, k in methods:
             if mlm_only:
-                method_name = f"{cluster_method}_{k}_fn{collapse_fn}_layer{hidden_state_i}_{projection_method}{j}"
+                method_name = f"{cluster_method}_{k}_fn_layer{hidden_state_i}_{projection_method}{j}"
             else:
                 method_name = f"nsp_{cluster_method}_{k}_layer{hidden_state_i}_{projection_method}{j}"
             print(method_name)
@@ -315,68 +321,70 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                 #for key, value in cluster_results.items():
                  #   clusters[key].append(contig_names)
 
-            deepbin_bins = vamb.benchmark.Binning(clusters, 
-                                                  reference, 
-                                                  recalls=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99], 
-                                                  precisions=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99])
-            
-            #print('Vamb bins:')
-            #for rank in deepbin_bins.summary():
-             #       print('\t'.join(map(str, rank)))
+            deepbin_bins = metrics.rand_score(cluster_results, targets) 
+            print('rand score', deepbin_bins)
 
-            #print("Binning:")
-            #print('reference', deepbin_bins.reference)
-            #print('contigsof', len(deepbin_bins.contigsof))
-            #print(deepbin_bins.contigsof)
-            #print('binof', len(deepbin_bins.binof))
-            #print('breadthof', deepbin_bins.breadthof)
-            #print('intersectionsof', deepbin_bins.intersectionsof)
-            #print('breadth', deepbin_bins.breadth)
-            #print('counters', deepbin_bins.counters)
-            #print('confusion, matrix', deepbin_bins.confusion_matrix)
+            deepbin_bins = metrics.adjusted_rand_score(cluster_results, targets)
+            print('adjusted rand score', deepbin_bins)
 
-            #print('Binning; nbins', deepbin_bins.nbins)
-            #print('Binning; ncontigs', deepbin_bins.ncontigs)
-            print('rank 0')
-            print(deepbin_bins.print_matrix(rank=0))
-            print('rank 1')
-            print(deepbin_bins.print_matrix(rank=1))
-            print('rank 2')
-            print(deepbin_bins.print_matrix(rank=2))
-            
-            for i, x in enumerate(clusters.keys()):
-                #print(x)
-                #print(i)
-                #print(deepbin_bins.confusion_matrix(genome, x))
-                print(deepbin_bins.mcc(genome, x))
-                print(deepbin_bins.f1(genome, x))
-                #print()
-
-            #print(len(clusters))
-
-            with open('results_{x}.csv'.format(x=file_name), 'a') as f:
+            with open('rand_{x}.csv'.format(x=file_name), 'a') as f:
                 writer = csv.writer(f)
-                flatten_bins = [str(rank) for sublist in deepbin_bins.summary() for rank in sublist]
-                print(flatten_bins)
-                writer.writerow([method_name] + flatten_bins)
+                writer.writerow(contig_range + [method_name] + deepbin_bins)
+"""
+            paired_confusion_matrix = pair_confusion_matrix(cluster_results, targets)
+            print('paired confusion matrix', paired_confusion_matrix)
+            confusion_matrix = [value for sublist in paired_confusion_matrix for value in sublist]
+            print('confusion matrix', confusion_matrix)
 
-            with open('mcc_{x}.csv'.format(x=file_name), 'w') as f:
+            tn = confusion_matrix[0]
+            fn = confusion_matrix[1]
+            fp = confusion_matrix[2]
+            tp = confusion_matrix[3]
+            
+            print('tn', tn)
+            print('fn', fn)
+            print('fp', fp)
+            print('tp', tp)
+
+            recall = tp / (tp + fn) 
+            print('recall', recall)
+
+            precision = tp / (tp + fp)
+            print('precision', precision)
+            
+            mcc_num = tp * tn - fp * fn
+            print('num', mcc_num)
+            mcc_den = (tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)
+            print('den', mcc_den)
+            if mcc_den == 0:
+                mcc = 0
+            else:
+                mcc_num / math.sqrt(mcc_den)
+        
+            f1 = 2*tp / (2*tp + fp + fn) 
+
+            with open('results_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'a') as f:
+                writer = csv.writer(f)
+                writer.writerow([method_name] + recall)
+
+            with open('mcc_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'a') as f:
                 writer = csv.writer(f)
                 mcc = []
-                for i, x in enumerate(clusters.keys()):
-                    mcc.append(deepbin_bins.mcc(genome, x))
-                writer.writerow(["tnf"] + mcc)
+                print('MCC', mcc)
+                writer.writerow([method_name] + mcc)
 
-            with open('f1_{x}.csv'.format(x=file_name), 'w') as f:
+            with open('f1_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'a') as f:
                 writer = csv.writer(f)
                 f1 = []
                 for i, x in enumerate(clusters.keys()):
                     f1.append(deepbin_bins.f1(genome, x))
-                writer.writerow(["tnf"] + f1)
+                print('F1', f1)
+                writer.writerow([method_name] + f1)
 
             if visualize: 
                 plt.figure(figsize=(7, 7))
                 scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=cluster_results, cmap='tab10')
+                plt.axis('off')
                 os.makedirs(name, exist_ok=True)
                 if mlm_only:
                     plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}_{cluster_method}_{k}_cluster.png")
@@ -384,7 +392,7 @@ def evaluate(model, data_loader, name, file_name, layer,  num_batches=None, visu
                     plt.savefig(f"{name}/viz_{hidden_state_i}_nsp_{projection_method}_{cluster_method}_{k}_cluster.png")
 
                 plt.clf()
-
+"""
 
 def plot(features, targets, legend_labels, name):
     pca = PCA(n_components=2)
@@ -411,7 +419,7 @@ def plot(features, targets, legend_labels, name):
     plt.clf()
 
 
-def evaluate_tnf(dataloader, contig_file, file_name):
+def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
 
     # Retrive map from contig name to genome.
     contig_name_to_genome = {}
@@ -454,7 +462,7 @@ def evaluate_tnf(dataloader, contig_file, file_name):
     plot_contigs = []
     for species in SPECIES_TO_PLOT:
         contig_names = species_to_contig_name[species]
-        for contig_name in contig_names[:150]:
+        for contig_name in contig_names:
             if contig_name in index_for_contig:
                 contig_tnfs = tnfs[index_for_contig[contig_name]]
                 tnfs_to_plot.append(contig_tnfs)
@@ -466,21 +474,23 @@ def evaluate_tnf(dataloader, contig_file, file_name):
     genome_to_color_id = {k: i for k, i in zip(sorted(set(species_label)), range(10))}
     genome_keys = genome_to_color_id.keys()
     targets = list(genome_to_color_id[x] for x in species_label)
-    plot(tnfs_to_plot, targets, genome_keys, name="tnf_gt_500_{dataset}".format(dataset=file_name))
+    plot(tnfs_to_plot, targets, genome_keys, name="tnf_gt_{n}_{dataset}".format(n=contig_range, dataset=file_name))
 
-    cache_file = "tnf_clusters_500_{dataset}.pkl".format(dataset=file_name)
+    cache_file = "tnf_clusters_{n}_{dataset}.pkl".format(n=contig_range, dataset=file_name)
     if os.path.exists(cache_file):
         with open(cache_file, 'rb') as fp:
-            kmeans_clusters = pickle.load(fp)
+            hdbscan_clusters = pickle.load(fp)
 
     else:
 
         # Cluster tnfs.
-        kmeans = KMeans(n_clusters = len(genomes_set), init = 'k-means++', random_state=1)
-        kmeans_clusters = kmeans.fit_predict(tnfs)
+        hdbscan_clusters = hdbscan.HDBSCAN(min_cluster_size=20).fit(tnfs).labels_
+        print('len', len(hdbscan_clusters))
+        #kmeans = KMeans(n_clusters = len(genomes_set), init = 'k-means++', random_state=1)
+        #kmeans_clusters = kmeans.fit_predict(tnfs)
 
         with open(cache_file, 'wb') as fp:
-            pickle.dump(kmeans_clusters, fp, protocol=4)
+            pickle.dump(hdbscan_clusters, fp, protocol=4)
 
     print("Finished clustering")
 
@@ -488,10 +498,10 @@ def evaluate_tnf(dataloader, contig_file, file_name):
     targets = []
     for contig in plot_contigs:
         if contig in index_for_contig:
-            target = kmeans_clusters[index_for_contig[contig]]
+            target = hdbscan_clusters[index_for_contig[contig]]
             targets.append(target)
 
-    plot(tnfs_to_plot, targets, bin_labels, name="tnf_clusters_500_{dataset}".format(dataset=file_name))
+    plot(tnfs_to_plot, targets, bin_labels, name="tnf_clusters_{n}_{dataset}".format(n=contig_range, dataset=file_name))
 
     # Create reference file.
     to_evaluate_idxes = [
@@ -531,13 +541,20 @@ def evaluate_tnf(dataloader, contig_file, file_name):
           reference.load_tax_file(taxonomy_file)
 
     clusters = defaultdict(list)
-    kmeans_clusters = [kmeans_clusters[i] for i in to_evaluate_idxes]
-    for i, x in enumerate(kmeans_clusters):
+    idx_hdbscan_clusters = [hdbscan_clusters[i] for i in to_evaluate_idxes]
+    for i, x in enumerate(idx_hdbscan_clusters):
         clusters[x].append(contignames[i])
+    
+    deepbin_bins = metrics.rand_score(hdbscan_clusters, targets) 
+    print('tnf rand score', deepbin_bins)
 
-    deepbin_bins = vamb.benchmark.Binning(clusters, reference)
+    deepbin_bins = metrics.adjusted_rand_score(hdbscan_clusters, targets)
+    print('tnf adjusted rand score', deepbin_bins)
 
-
+    with open('rand_{x}.csv'.format(x=file_name), 'a') as f:
+        writer = csv.writer(f)
+        writer.writerow(contig_range + ["tnf"] + deepbin_bins)
+"""
     # Save results.
     with open('results_{x}.csv'.format(x=file_name), 'w') as f:
         writer = csv.writer(f)
@@ -546,20 +563,21 @@ def evaluate_tnf(dataloader, contig_file, file_name):
         print(flatten_bins)
         writer.writerow(["tnf"] + flatten_bins)
 
-    with open('mcc_{x}.csv'.format(x=file_name), 'w') as f:
+    with open('mcc_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'w') as f:
         writer = csv.writer(f)
         mcc = []
         for i, x in enumerate(clusters.keys()):
+            print('MCC', deepbin_bins.mcc(genome, x))
             mcc.append(deepbin_bins.mcc(genome, x))
         writer.writerow(["tnf"] + mcc)
 
-    with open('f1_{x}.csv'.format(x=file_name), 'w') as f:
+    with open('f1_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'w') as f:
         writer = csv.writer(f)
         f1 = []
         for i, x in enumerate(clusters.keys()):
             f1.append(deepbin_bins.f1(genome, x))
         writer.writerow(["tnf"] + f1)
-
+"""
 def create_contig_file_list(path_to_contig_file):
     contig_list = []
     with open(path_to_contig_file, 'r') as fp:
@@ -603,12 +621,14 @@ def main():
     train_file_name = "train"
     val_file_name = "val"
 
-    if args.nsp_training_task == True:
-        val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val_all_samples_over_500", genomes=None, random_segment=False)
-        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
+    max_contig_length = 10000
 
-        train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train_all_samples_over_500", genomes=SPECIES_TO_PLOT, random_segment=False)
-        train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
+    if args.nsp_training_task == True:
+        val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val_all_samples_over_{n}".format(n=max_contig_length), genomes=None, random_segment=False)
+        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=0, drop_last=False)
+
+        train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train_all_samples_over_{n}".format(n=max_contig_length), genomes=SPECIES_TO_PLOT, random_segment=False)
+        train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=0, drop_last=False)
 
         print('train length', len(train_dataloader))
         print('val length', len(val_dataloader))
@@ -616,12 +636,12 @@ def main():
         model = BertBin.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset).cuda()
         model.eval()
         
-        evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name)
-        evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name)
+        evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name, contig_range = max_contig_length)
+        evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name, contig_range = max_contig_length)
 
         #for i in reversed(range(13)):
-        evaluate(model, train_dataloader, name=f"viz_out_mcc_f1/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task)
-        evaluate(model, val_dataloader, name=f"viz_out_mcc_f1/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=12, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task)
+        evaluate(model, train_dataloader, name=f"viz_out_mcc_f1/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=round(0.1*len(train_dataloader)), visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
+        evaluate(model, val_dataloader, name=f"viz_out_mcc_f1/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=12, num_batches=round(0.1*len(val_dataloader)), visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
     
     elif args.nsp_training_task == False:
         #val_dataset = GenomeKmerDatasetNSP(args.val_contigs, cache_name="viz_val_1_sample_over_512_nsp", genomes=None)
