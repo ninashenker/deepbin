@@ -58,7 +58,7 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
         # hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
         if mlm_only:
             selected_hidden_state = outputs[1][layer].detach().cpu().numpy()
-            collapsed_hidden_state = np.mean(selected_hidden_state, axis=-2)#.astype(np.float32)
+            collapsed_hidden_state = np.maximum(selected_hidden_state, axis=-2)#.astype(np.float32)
             taxonomy_labels = batch[1] 
             contig_names = batch[2]
             genome_id = batch[3]
@@ -93,8 +93,8 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
     cls = []
     
     if mlm_only:
-        collapsed_hidden_state = np.empty((len(data_loader.dataset), 768), dtype='float32')
-        #collapsed_hidden_state = np.empty((num_results * data_loader.batch_size, 768), dtype='float32')
+        #collapsed_hidden_state = np.empty((len(data_loader.dataset), 768), dtype='float32')
+        collapsed_hidden_state = np.empty((num_results * data_loader.batch_size, 768), dtype='float32')
         with open('batches.pickle', 'rb') as fr:
             try:
                 i = 0
@@ -108,8 +108,8 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
             except EOFError:
                 pass
     else:
-        cls = np.empty((len(data_loader.dataset), 768), dtype='float32')
-        #cls = np.empty((num_results * data_loader.batch_size, 768), dtype='uint8')
+        #cls = np.empty((len(data_loader.dataset), 768), dtype='float32')
+        cls = np.empty((num_results * data_loader.batch_size, 768), dtype='uint8')
         with open('batches.pickle', 'rb') as fr:
             try:
                 i = 0
@@ -123,8 +123,8 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
             except EOFError:
                 pass
 
-        combined_feature_space = cls
-    print('len of collapsed_hidden_state', len(collapsed_hidden_state))
+        collapsed_hidden_state = cls
+    #print('len of collapsed_hidden_state', len(collapsed_hidden_state))
     print('len of cls', len(cls))
     print('len of genome ids', len(genome_id))
     print('len of labels', len(new_labels))
@@ -320,16 +320,16 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
                 #for key, value in cluster_results.items():
                  #   clusters[key].append(contig_names)
 
-            deepbin_bins = metrics.rand_score(cluster_results, targets) 
-            print('rand score', deepbin_bins)
+            #deepbin_bins = metrics.rand_score(cluster_results, targets) 
+            #print('rand score', deepbin_bins)
 
-            deepbin_bins_adj = metrics.adjusted_rand_score(cluster_results, targets)
-            print('adjusted rand score', deepbin_bins_adj)
+            #deepbin_bins_adj = metrics.adjusted_rand_score(cluster_results, targets)
+            #print('adjusted rand score', deepbin_bins_adj)
 
-            with open('rand_{x}.csv'.format(x=file_name), 'a') as f:
-                writer = csv.writer(f)
-                writer.writerow([method_name] + [deepbin_bins] + [deepbin_bins_adj])
-"""
+           # with open('rand_{x}.csv'.format(x=file_name), 'a') as f:
+            #    writer = csv.writer(f)
+             #   writer.writerow([method_name] + [deepbin_bins] + [deepbin_bins_adj])
+
             paired_confusion_matrix = pair_confusion_matrix(cluster_results, targets)
             print('paired confusion matrix', paired_confusion_matrix)
             confusion_matrix = [value for sublist in paired_confusion_matrix for value in sublist]
@@ -361,10 +361,10 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
                 mcc_num / math.sqrt(mcc_den)
         
             f1 = 2*tp / (2*tp + fp + fn) 
-
+"""
             with open('results_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'a') as f:
                 writer = csv.writer(f)
-                writer.writerow([method_name] + recall)
+                writer.writerow([method_name] + recall + precision)
 
             with open('mcc_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'a') as f:
                 writer = csv.writer(f)
@@ -391,8 +391,8 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
                     plt.savefig(f"{name}/viz_{hidden_state_i}_nsp_{projection_method}_{cluster_method}_{k}_cluster.png")
 
                 plt.clf()
-"""
 
+"""
 def plot(features, targets, legend_labels, name):
     pca = PCA(n_components=2)
     pca.fit(features)
@@ -430,7 +430,7 @@ def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
         genome_id = batch[3]
 
         for name, taxonomy, genome in zip(contig_names, taxonomy_labels, genome_id):
-          contig_name_to_genome[name] = (taxonomy, genome)
+          contig_name_to_genome[name] = taxonomy
           species_to_contig_name[taxonomy].append(name)
           genomes_set.add(genome)
 
@@ -448,16 +448,23 @@ def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
                 tnffile,
                 minlength=mincontiglength
             )
-
     print("evaluate_tnf: tnfs length:", len(contignames))
+    print('type', type(tnfs))
+
+    tuple_of_tnfs_to_contig = list(zip(tnfs, contignames))
 
     # Get all species labels for each tnf
+    
+    filtered_tuples = [t for t in tuple_of_tnfs_to_contig if t[1] in contig_name_to_genome]
+    
     species_labels = []
-    for contig_name in contignames:
-        if contig_name in contig_name_to_genome:
-            species, _ = contig_name_to_genome[contig_name]
-            species_labels.append(species)
-
+    tnf=[]
+    for t in filtered_tuples:
+        species_labels.append(t[1])
+        tnf.append(t[0])
+    
+    
+    
     # Convert all species labels to unique int id
     species_to_id = {k: i for i, k in enumerate(sorted(set(species_labels)))}
     species_id_labels = [species_to_id[x] for x in species_labels]
@@ -495,7 +502,7 @@ def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
 
     else:
         # Cluster tnfs.
-        hdbscan_clusters = hdbscan.HDBSCAN(min_cluster_size=20).fit(tnfs).labels_
+        hdbscan_clusters = hdbscan.HDBSCAN(min_cluster_size=20).fit(tnf).labels_
         #kmeans = KMeans(n_clusters = len(genomes_set), init = 'k-means++', random_state=1)
         #kmeans_clusters = kmeans.fit_predict(tnfs)
 
@@ -503,9 +510,19 @@ def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
             pickle.dump(hdbscan_clusters, fp, protocol=4)
 
     print("Finished clustering")
-    print('len', len(hdbscan_clusters))
 
+    deepbin_bins = metrics.rand_score(hdbscan_clusters, species_id_labels)
+    print('tnf rand score', deepbin_bins)
+    
+    print('hdbscan', len(hdbscan_clusters))
+    print('species', len(species_id_labels))
+    deepbin_bins_adj = metrics.adjusted_rand_score(hdbscan_clusters, species_id_labels) 
+    print('tnf adjusted rand score', deepbin_bins_adj)
 
+    with open('tnf_rand_{x}.csv'.format(x=file_name), 'a') as f:
+        writer = csv.writer(f)
+        writer.writerow(["tnf"] + [deepbin_bins] + [deepbin_bins_adj])
+"""
     # Create reference file.
     to_evaluate_idxes = [
         i for i in range(len(contignames)) 
@@ -548,18 +565,7 @@ def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
     for i, x in enumerate(idx_hdbscan_clusters):
         clusters[x].append(contignames[i])
 
-    deepbin_bins = metrics.rand_score(hdbscan_clusters, species_id_labels)
-    print('tnf rand score', deepbin_bins)
-    
-    print('hdbscan', len(hdbscan_clusters))
-    print('species', len(species_id_labels))
-    deepbin_bins_adj = metrics.adjusted_rand_score(hdbscan_clusters, species_id_labels) 
-    print('tnf adjusted rand score', deepbin_bins_adj)
 
-    with open('rand_{x}.csv'.format(x=file_name), 'a') as f:
-        writer = csv.writer(f)
-        writer.writerow(["tnf"] + [deepbin_bins] + [deepbin_bins_adj])
-"""
     # Save results.
     with open('results_{x}.csv'.format(x=file_name), 'w') as f:
         writer = csv.writer(f)
@@ -626,31 +632,31 @@ def main():
     train_file_name = "train"
     val_file_name = "val"
 
-    max_contig_length = 10000
+    max_contig_length = 0
 
     if args.nsp_training_task == True:
-        val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val_all_samples_over_{n}".format(n=max_contig_length), genomes=None, random_segment=False)
-        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=0, drop_last=False)
+        val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val_all_sample_over_{n}".format(n=max_contig_length), genomes=None, random_segment=False)
+        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
 
-        train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train_all_samples_over_{n}".format(n=max_contig_length), genomes=SPECIES_TO_PLOT, random_segment=False)
-        train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=0, drop_last=False)
+        train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train_all_samples", genomes=SPECIES_TO_PLOT, random_segment=False)
+        train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
 
         print('train length', len(train_dataloader))
-        print('val length', len(val_dataloader))
+        #print('val length', len(val_dataloader))
 
         model = BertBin.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset).cuda()
         model.eval()
         
-        evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name, contig_range = max_contig_length)
-        evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name, contig_range = max_contig_length)
+        #evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name, contig_range = max_contig_length)
+        #evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name, contig_range = max_contig_length)
 
         #for i in reversed(range(13)):
-        #evaluate(model, train_dataloader, name=f"viz_out_mcc_f1/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=1000, visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
+        evaluate(model, train_dataloader, name=f"viz_out_mcc_f1/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=1000, visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
         #evaluate(model, val_dataloader, name=f"viz_out_mcc_f1/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=12, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
     
     elif args.nsp_training_task == False:
-        #val_dataset = GenomeKmerDatasetNSP(args.val_contigs, cache_name="viz_val_1_sample_over_512_nsp", genomes=None)
-        #val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
+        val_dataset = GenomeKmerDatasetNSP(args.val_contigs, cache_name="viz_val_1_sample_over_512_nsp", genomes=None)
+        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
 
         train_dataset = GenomeKmerDatasetNSP(args.train_contigs, cache_name="viz_train_1_sample_over_512_nsp", genomes=SPECIES_TO_PLOT)
         train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
@@ -661,12 +667,12 @@ def main():
         model = BertBinNSP.load_from_checkpoint(args.ckpt_path, kmer_dataset=val_dataset, val_dataset=val_dataset).cuda()
         model.eval()
 
-        evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name)
-        evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name)
+        #evaluate_tnf(train_dataloader, args.train_contigs, file_name=train_file_name)
+        #evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name)
 
-        for i in reversed(range(13)):
-            evaluate(model, val_dataloader, name=f"viz_out_nsp/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=i, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task)
-            evaluate(model, train_dataloader, name=f"viz_out_nsp/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task)
+        #for i in reversed(range(13)):
+        #evaluate(model, val_dataloader, name=f"viz_out_nsp/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=i, num_batches=1000, visualize = args.visualize, mlm_only = args.nsp_training_task)
+        evaluate(model, train_dataloader, name=f"viz_out_nsp/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=1000, visualize = args.visualize, mlm_only = args.nsp_training_task)
 
 
 

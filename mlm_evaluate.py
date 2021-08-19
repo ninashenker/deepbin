@@ -357,7 +357,7 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
 
             sequence = sequence_by_contig_name[contig_name]
             contig_length = len(sequence)
-            if len(sequence) < 10000:
+            if len(sequence) < 512:
                 continue
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
