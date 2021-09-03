@@ -219,8 +219,8 @@ class BertBinNSP(pl.LightningModule):
         self.train_tokenizer = kmer_dataset.tokenizer
         self.val_tokenizer = val_dataset.tokenizer
     
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, x, y):
+        return self.model(x, y)
 
     def configure_optimizers(self):
         no_decay = ["bias", "LayerNorm.weight"]
@@ -421,7 +421,7 @@ class GenomeKmerDatasetNSP(torch.utils.data.Dataset):
                 continue
             sequence = sequence_by_contig_name[contig_name]
             contig_length = len(sequence)
-            if len(sequence) < 512:
+            if len(sequence) < 100:
                 continue
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)

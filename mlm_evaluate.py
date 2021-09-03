@@ -296,7 +296,7 @@ class BertBin(pl.LightningModule):
     
 
 class GenomeKmerDataset(torch.utils.data.Dataset):
-    def __init__(self, contigs, random_segment = True, k=4, genomes=10, cache_name="val_tuples"):
+    def __init__(self, contigs, random_segment = True, k=4, genomes=None, cache_name="val_tuples"):
         self.tokenizer = DNATokenizer.from_pretrained('dna4')
 
         #if tuples already stored, read them in - note if any of the underlying val contig samples are deleted then make sure to remove the cache or if arguments change
@@ -311,8 +311,8 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
         sequence_by_contig_name = self.file2seq(contig_list)
 
         #genome information is stored in the taxonomy and gsa mapping files. We need to join these together and then sample 10 genomes and store their respective contigs.
-        taxonomy = '/mnt/data/CAMI/data/short_read_oral/taxonomy.tsv'
-        contig_to_genome = '/mnt/data/CAMI/data/short_read_oral/reformatted_manually_combined_gsa_mapping.tsv'
+        taxonomy = '/mnt/data/CAMI/data/short_read_airway/taxonomy.tsv'
+        contig_to_genome = '/mnt/data/CAMI/data/short_read_airway/reformatted_manually_combined_gsa_mapping.tsv'
 
         contig_to_genome_df = pd.read_csv(contig_to_genome, sep='\t', header=None)
         contig_to_genome_df = contig_to_genome_df.rename(columns={0: 'contig_name', 1: 'genome'})
@@ -357,16 +357,11 @@ class GenomeKmerDataset(torch.utils.data.Dataset):
 
             sequence = sequence_by_contig_name[contig_name]
             contig_length = len(sequence)
-            if len(sequence) < 512:
-                continue
             kmers = self.seq2kmer(sequence, k)
             padded_kmers = self.create_padding(kmers)
             tokenized_kmers = self.tokenize_all(padded_kmers)
-            if random_segment:
-                segment = random.choice(tokenized_kmers)
-            else:
-                segment = tokenized_kmers[0]
-            cache_file = '/mnt/data/CAMI/DNABERT/cached_contigs/val_sample_{idx}.pt'.format(idx = contig_name)
+            segment = random.choice(tokenized_kmers)
+            cache_file = '/mnt/data/CAMI/DNABERT/eval_contigs_airway/{idx}.pt'.format(idx = contig_name)
             with open(cache_file, 'w') as fp:
                 torch.save(segment, cache_file)
 

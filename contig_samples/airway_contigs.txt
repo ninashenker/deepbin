@@ -1,0 +1,10 @@
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_10/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_11/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_12/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_23/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_26/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_27/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_4/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_7/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_8/contigs/anonymous_gsa.fasta 
+/mnt/data/CAMI/data/short_read_airway/2017.12.04_18.56.22_sample_9/contigs/anonymous_gsa.fasta

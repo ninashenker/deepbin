@@ -58,7 +58,7 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
         # hidden_states = [x.detach().cpu().numpy() for x in outputs[1]]
         if mlm_only:
             selected_hidden_state = outputs[1][layer].detach().cpu().numpy()
-            collapsed_hidden_state = np.maximum(selected_hidden_state, axis=-2)#.astype(np.float32)
+            collapsed_hidden_state = np.mean(selected_hidden_state, axis=-2)#.astype(np.float32)
             taxonomy_labels = batch[1] 
             contig_names = batch[2]
             genome_id = batch[3]
@@ -73,8 +73,9 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
         else:
             #size (8, 512,786)
             selected_hidden_state = outputs[2][layer].detach().cpu().numpy()
+            cls_features = np.mean(selected_hidden_state, axis=-2)#.astype(np.float32)
             #change cls feature to size (8,768), cls is the first seq
-            cls_features = selected_hidden_state[:, 0, :]
+            #cls_features = selected_hidden_state[:, 0, :]
             #nsp_label = batch[1]
             #token_type_ids = batch[2]
             taxonomy_labels = batch[3]
@@ -93,8 +94,8 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
     cls = []
     
     if mlm_only:
-        #collapsed_hidden_state = np.empty((len(data_loader.dataset), 768), dtype='float32')
-        collapsed_hidden_state = np.empty((num_results * data_loader.batch_size, 768), dtype='float32')
+        collapsed_hidden_state = np.empty((len(data_loader.dataset), 768), dtype='float32')
+        #collapsed_hidden_state = np.empty((num_results * data_loader.batch_size, 768), dtype='float32')
         with open('batches.pickle', 'rb') as fr:
             try:
                 i = 0
@@ -108,8 +109,8 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
             except EOFError:
                 pass
     else:
-        #cls = np.empty((len(data_loader.dataset), 768), dtype='float32')
-        cls = np.empty((num_results * data_loader.batch_size, 768), dtype='uint8')
+        cls = np.empty((len(data_loader.dataset), 768), dtype='float32')
+        #cls = np.empty((num_results * data_loader.batch_size, 768), dtype='uint8')
         with open('batches.pickle', 'rb') as fr:
             try:
                 i = 0
@@ -128,6 +129,7 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
     print('len of cls', len(cls))
     print('len of genome ids', len(genome_id))
     print('len of labels', len(new_labels))
+    print(new_labels[1])
     print('len of contig names', len(contig_names))
     """
     if mlm_only: 
@@ -195,7 +197,7 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
 
                 os.makedirs(name, exist_ok=True)
                 if mlm_only:
-                    plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}.png")
+                    plt.savefig(f"{name}/viz_{hidden_state_i}_{projection_method}.png")
                 else:
                     plt.savefig(f"{name}/viz_{hidden_state_i}_{projection_method}_nsp.png")
                 plt.clf()
@@ -266,18 +268,17 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
     #print("Reference:")
     #print('ref ngenomes', reference.ngenomes)
     #print('ref ncontigs', reference.ncontigs)
-
+    np.set_printoptions(threshold=sys.maxsize)   
 
     k_centers = [int(len(genomes) * 0.2), int(len(genomes) * 0.5), len(genomes)]
     k_methods = ["kmeans", "kmedoids"]
     k_combos = itertools.product(k_methods, k_centers)
 
-    cluster_sizes = [20] #[5, 10, 15, 20]
+    cluster_sizes = [5, 10, 15, 20]
     methods = ["hdbscan"] #, "vamb_clustering"]
     cluster_combos = itertools.product(methods, cluster_sizes)
 
-    #methods = list(k_combos) + list(cluster_combos) 
-    methods = list(cluster_combos)
+    methods = list(k_combos) + list(cluster_combos) 
     for cluster_method, k in methods:
             if mlm_only:
                 method_name = f"{cluster_method}_{k}_fn_layer{hidden_state_i}_{projection_method}{j}"
@@ -297,6 +298,9 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
                     clusters[x].append(contig_names[i])
             elif cluster_method == "hdbscan":
                 cluster_results = hdbscan.HDBSCAN(min_cluster_size=k).fit(projection).labels_
+                occurrences = np.count_nonzero(cluster_results== -1)
+                zero_occurrences = np.count_nonzero(cluster_results == 0)
+                one_occurrences = np.count_nonzero(cluster_results == 1)
                 clusters = defaultdict(list)
                 for i, x in enumerate(cluster_results):
                     clusters[x].append(contig_names[i])
@@ -329,15 +333,22 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
            # with open('rand_{x}.csv'.format(x=file_name), 'a') as f:
             #    writer = csv.writer(f)
              #   writer.writerow([method_name] + [deepbin_bins] + [deepbin_bins_adj])
+            print('LAYER', layer) 
+            noise_indices = list(i for i in range(len(cluster_results)) if cluster_results[i] == -1)
+            filtered_noise_targets = [x for i, x in enumerate(targets) if i not in noise_indices]
+            filtered_noise_clusters = [x for i, x in enumerate(cluster_results) if i not in noise_indices]
+            print('clusters', len(filtered_noise_clusters))
+            print('targets', len(filtered_noise_targets))
 
-            paired_confusion_matrix = pair_confusion_matrix(cluster_results, targets)
+            paired_confusion_matrix = pair_confusion_matrix(filtered_noise_clusters, filtered_noise_targets)
             print('paired confusion matrix', paired_confusion_matrix)
             confusion_matrix = [value for sublist in paired_confusion_matrix for value in sublist]
             print('confusion matrix', confusion_matrix)
 
+
             tn = confusion_matrix[0]
-            fn = confusion_matrix[1]
-            fp = confusion_matrix[2]
+            fn = confusion_matrix[2]
+            fp = confusion_matrix[1]
             tp = confusion_matrix[3]
             
             print('tn', tn)
@@ -350,17 +361,35 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
 
             precision = tp / (tp + fp)
             print('precision', precision)
-            
-            mcc_num = tp * tn - fp * fn
-            print('num', mcc_num)
-            mcc_den = (tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)
-            print('den', mcc_den)
-            if mcc_den == 0:
-                mcc = 0
-            else:
-                mcc_num / math.sqrt(mcc_den)
-        
+
+            acc = (tp+tn)/(tp+fp+fn+tn)
+            print('acc', acc)
+
             f1 = 2*tp / (2*tp + fp + fn) 
+            print('f1', f1)
+
+            if visualize: 
+                plt.figure(figsize=(7, 7))
+                scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=cluster_results, cmap='tab10')
+                plt.axis('off')
+                os.makedirs(name, exist_ok=True)
+                if mlm_only:
+                    plt.savefig(f"{name}/viz_{hidden_state_i}_{projection_method}_{cluster_method}_{k}_cluster.png")
+                else:
+                    plt.savefig(f"{name}/viz_{hidden_state_i}_nsp_{projection_method}_{cluster_method}_{k}_cluster.png")
+
+                plt.clf()
+            
+            #mcc_num = tp * tn - fp * fn
+            #print('num', mcc_num)
+            #mcc_den = (tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)
+            #print('den', mcc_den)
+            #if mcc_den == 0:
+            #    mcc = 0
+            #else:
+             #   mcc = mcc_num / math.sqrt(mcc_den)
+            #print('mcc', mcc)
+
 """
             with open('results_{n}_{x}.csv'.format(n=contig_range, x=file_name), 'a') as f:
                 writer = csv.writer(f)
@@ -379,20 +408,9 @@ def evaluate(model, data_loader, name, file_name, layer, num_batches=None, visua
                     f1.append(deepbin_bins.f1(genome, x))
                 print('F1', f1)
                 writer.writerow([method_name] + f1)
-
-            if visualize: 
-                plt.figure(figsize=(7, 7))
-                scatter = plt.scatter(projection[:, 0], projection[:, 1], alpha=0.9, s=5.0, c=cluster_results, cmap='tab10')
-                plt.axis('off')
-                os.makedirs(name, exist_ok=True)
-                if mlm_only:
-                    plt.savefig(f"{name}/viz_{hidden_state_i}_{collapse_fn}_{projection_method}_{cluster_method}_{k}_cluster.png")
-                else:
-                    plt.savefig(f"{name}/viz_{hidden_state_i}_nsp_{projection_method}_{cluster_method}_{k}_cluster.png")
-
-                plt.clf()
-
 """
+
+
 def plot(features, targets, legend_labels, name):
     pca = PCA(n_components=2)
     pca.fit(features)
@@ -493,6 +511,7 @@ def evaluate_tnf(dataloader, contig_file, file_name, contig_range=None):
     genome_to_color_id = {k: i for k, i in zip(sorted(set(species_label)), range(10))}
     genome_keys = genome_to_color_id.keys()
     targets = list(genome_to_color_id[x] for x in species_label)
+    print(targets)
     plot(tnfs_to_plot, targets, genome_keys, name="tnf_gt_{n}_{dataset}".format(n=contig_range, dataset=file_name))
 
     cache_file = "tnf_clusters_{n}_{dataset}.pkl".format(n=contig_range, dataset=file_name)
@@ -636,10 +655,10 @@ def main():
 
     if args.nsp_training_task == True:
         val_dataset = GenomeKmerDataset(args.val_contigs, cache_name="viz_val_all_sample_over_{n}".format(n=max_contig_length), genomes=None, random_segment=False)
-        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
+        val_dataloader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=0, drop_last=False)
 
-        train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train_all_samples", genomes=SPECIES_TO_PLOT, random_segment=False)
-        train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=7, drop_last=False)
+        train_dataset = GenomeKmerDataset(args.train_contigs, cache_name="viz_train_airway", genomes=SPECIES_TO_PLOT, random_segment=False)
+        train_dataloader = DataLoader(train_dataset, batch_size=8, shuffle=False, num_workers=0, drop_last=False)
 
         print('train length', len(train_dataloader))
         #print('val length', len(val_dataloader))
@@ -651,7 +670,7 @@ def main():
         #evaluate_tnf(val_dataloader, args.val_contigs, file_name=val_file_name, contig_range = max_contig_length)
 
         #for i in reversed(range(13)):
-        evaluate(model, train_dataloader, name=f"viz_out_mcc_f1/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=1000, visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
+        evaluate(model, train_dataloader, name=f"viz_out_mcc_f1/viz_train_{pathlib.Path(args.ckpt_path).stem}", file_name=train_file_name, layer=12, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
         #evaluate(model, val_dataloader, name=f"viz_out_mcc_f1/viz_val_{pathlib.Path(args.ckpt_path).stem}", file_name=val_file_name, layer=12, num_batches=None, visualize = args.visualize, mlm_only = args.nsp_training_task, contig_range = max_contig_length)
     
     elif args.nsp_training_task == False:
